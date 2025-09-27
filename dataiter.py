@@ -8,10 +8,10 @@ import numpy as np
 
 
 class MyData(Dataset):
-    def __init__(self, img_dir, trans=None, use_depth=True, roll=True, pitch=True):
+    def __init__(self, img_dir, color_trans=None, depth_trans=None, use_depth=True, roll=True, pitch=True):
         self.img_dir = img_dir
-        self.transform = trans
-        # 只收集 color 图，避免重复
+        self.color_transform = color_trans
+        self.depth_transform = depth_trans
         self.imgs = [f for f in os.listdir(img_dir) if f.endswith('_color.png')]
         self.use_depth = use_depth
         self.roll = roll
@@ -25,20 +25,19 @@ class MyData(Dataset):
         img_path = os.path.join(self.img_dir, img_name)
         rgb_img = Image.open(img_path).convert('RGB')
 
+        # 变换
+        if self.color_transform:
+            rgb_img = self.color_transform(rgb_img)      # [3,H,W]
+
         # 对应的灰度图
-        if self.use_depth:
+        if self.use_depth and self.depth_transform:
             depth_name = img_name.replace('_color.png', '_depth.png')
             depth_path = os.path.join(self.img_dir, depth_name)
+            if not os.path.exists(depth_path):
+                raise FileNotFoundError(f"Depth image not found: {depth_path}")
             depth_img = Image.open(depth_path).convert('L')  # 单通道灰度
-
-        # 变换
-        if self.transform:
-            rgb_img = self.transform(rgb_img)      # [3,H,W]
-            if self.use_depth:
-                depth_img = self.transform(depth_img)  # [1,H,W]
-
-        if self.use_depth:
-            image = torch.cat([rgb_img, depth_img], dim=0)  # [4,H,W] 合并
+            depth_img = self.depth_transform(depth_img)
+            image = torch.cat([rgb_img, depth_img], dim=0)  # [4,H,W]
         else:
             image = rgb_img
 
@@ -59,3 +58,25 @@ class MyData(Dataset):
 
         return image, torch.tensor(labels, dtype=torch.float32)
 
+
+if __name__ == '__main__':
+
+    color_transform = transforms.Compose([
+        transforms.Resize((150, 150)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5699, 0.4200, 0.3462), (0.3303, 0.2403, 0.2773))
+    ])
+
+    depth_transform = transforms.Compose([
+        transforms.Resize((150, 150)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))  # 假设灰度均值=0.5, 方差=0.5
+    ])
+
+    # 创建数据集实例
+    dataset = MyData(img_dir='/root/autodl-tmp/dataset/images/train',
+                    color_trans=color_transform,
+                    depth_trans= depth_transform,
+                    use_depth= True,
+                    roll=True,
+                    pitch=True)
