@@ -30,14 +30,22 @@ class MyData(Dataset):
             rgb_img = self.color_transform(rgb_img)      # [3,H,W]
 
         # 对应的灰度图
-        if self.use_depth and self.depth_transform:
+        if self.use_depth:
             depth_name = img_name.replace('_color.png', '_depth.png')
-            depth_path = os.path.join(self.img_dir, depth_name)
-            if not os.path.exists(depth_path):
-                raise FileNotFoundError(f"Depth image not found: {depth_path}")
-            depth_img = Image.open(depth_path).convert('L')  # 单通道灰度
-            depth_img = self.depth_transform(depth_img)
-            image = torch.cat([rgb_img, depth_img], dim=0)  # [4,H,W]
+
+            try:
+                depth_path = os.path.join(self.img_dir, depth_name)
+                depth_img = Image.open(depth_path).convert('L')
+
+                if self.depth_transform:
+                    depth_img = self.depth_transform(depth_img)
+
+                image = torch.cat([rgb_img, depth_img], dim=0)  # [4,H,W]
+
+            except FileNotFoundError:
+                print(f"Depth image not found: {depth_path}")
+                return None, None
+
         else:
             image = rgb_img
 
