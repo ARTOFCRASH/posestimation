@@ -11,16 +11,18 @@ class ChannelAttention(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d(1)         # Global pooling
         self.max_pool = nn.AdaptiveMaxPool2d(1)
 
+        # mlp
         self.fc1 = nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False)
         self.relu = nn.ReLU()
         self.fc2 = nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
+
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         avg_out = self.fc2(self.relu(self.fc1(self.avg_pool(x))))
         max_out = self.fc2(self.relu(self.fc1(self.max_pool(x))))
         out = self.sigmoid(avg_out + max_out)
-        return out       # size: 1x1xC
+        return out
 
 
 class SpatialAttention(nn.Module):
@@ -49,10 +51,10 @@ class CBAM(nn.Module):
 
     def forward(self, x):
         out = self.channel_att(x) * x
-        print(self.channel_att(x).shape)
-        print(f"channel Attention Module:{out.shape}")
+        # print(self.channel_att(x).shape)
+        # print(f"channel Attention Module:{out.shape}")
         out = self.spatial_att(out) * out
-        print(self.spatial_att(out).shape)
+        # print(self.spatial_att(out).shape)
         return out
 
 
@@ -123,6 +125,39 @@ class ResNet_CBAM(nn.Module):
         output = self.fc(x)
 
         return output
+
+
+class IAGF_Module(nn.Module):
+    def __init__(self, channels: int):
+        super(IAGF_Module, self).__init__()
+        self.depth_to_rgb_att = nn.Sequential(
+            nn.Conv2d(channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.rgb_to_depth_att = ChannelAttention(channels, reduction_ratio=16)
+        self.gate = nn.Sequential(
+            nn.Conv2d(channels * 2, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.cbam = CBAM(channels)
+        self.final_conv = nn.Conv2d(channels, channels, kernel_size=1)
+
+    def forward(self, F_rgb: torch.Tensor, F_depth: torch.Tensor) -> torch.Tensor:
+        rgb_att_map = self.depth_to_rgb_att(F_depth)
+        F_rgb_enhanced = F_rgb * rgb_att_map
+
+        depth_att_weights = self.rgb_to_depth_att(F_rgb)
+        F_depth_enhanced = F_depth * depth_att_weights
+
+        combined = torch.cat([F_rgb_enhanced, F_depth_enhanced], dim=1)
+        gate_map = self.gate(combined)
+
+        F_fused = gate_map * F_rgb_enhanced + (1 - gate_map) * F_depth_enhanced
+
+        F_res = self.cbam(F_fused)
+        F_final = F_fused + self.final_conv(F_res)
+
+        return F_final
 
 
 if __name__ == '__main__':
