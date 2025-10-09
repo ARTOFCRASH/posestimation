@@ -58,14 +58,14 @@ class CBAM(nn.Module):
         return out
 
 
-class ResNet_CBAM(nn.Module):
+class ResNet34_CBAM(nn.Module):
     def __init__(self, num_classes: int = 10, pretrained: bool = False):
-        super(ResNet_CBAM, self).__init__()
+        super(ResNet34_CBAM, self).__init__()
 
         if pretrained:
-            base_model = models.resnet50(pretrained=True)
+            base_model = models.resnet34(pretrained=True)
         else:
-            base_model = models.resnet50(pretrained=False)
+            base_model = models.resnet34(pretrained=False)
 
         # RGB分支
         self.rgb_stem = nn.Sequential(base_model.conv1, base_model.bn1, base_model.relu, base_model.maxpool)
@@ -85,12 +85,12 @@ class ResNet_CBAM(nn.Module):
         self.depth_layer2 = copy.deepcopy(base_model.layer2)
 
         self.fusion_conv = nn.Sequential(
-            nn.Conv2d(1024, 512, kernel_size=1, bias=False),
-            nn.BatchNorm2d(512),
+            nn.Conv2d(256, 128, kernel_size=1, bias=False),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True)
         )
 
-        self.cbam = CBAM(in_planes=512)
+        self.cbam = CBAM(in_planes=128)
 
         self.shared_layer3 = base_model.layer3
         self.shared_layer4 = base_model.layer4
@@ -170,5 +170,5 @@ if __name__ == '__main__':
 
     m1 = torch.ones((64, 4, 150, 150))
     m2 = torch.ones((64, 1, 150, 150))
-    net = ResNet_CBAM(2, False)
+    net = ResNet34_CBAM(2, False)
     print(net(m1[:, 0:3, :, :], m1[:, 3:4, :, :]))
