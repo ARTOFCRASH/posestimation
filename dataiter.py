@@ -56,7 +56,7 @@ class MyDataset(Dataset):
 
 
 if __name__ == "__main__":
-    npz_dir = r"D:\files\npz dataset\p7_m_npz"
+    npz_dir = r"D:\files\npz dataset\p103_m_npz"
 
     
     dataset = MyDataset(npz_dir=npz_dir, use_depth=False)

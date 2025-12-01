@@ -112,7 +112,8 @@ def main():
     print(f"  depth total: {sizeof_fmt(total_depth_bytes)}")
     print(f"  label total: {sizeof_fmt(total_label_bytes)}")
     print(f"  ALL total:   {sizeof_fmt(total_bytes)}")
-
+    print("\n[ON DISK]")
+    print(f"  npz files total size on disk: {sizeof_fmt(total_npz_bytes)}")
 
 if __name__ == "__main__":
     main()
