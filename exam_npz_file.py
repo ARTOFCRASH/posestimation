@@ -3,10 +3,8 @@ import glob
 import numpy as np
 from collections import Counter
 
-# ================== 配置区域 ==================
 NPZ_DIR = r"D:\files\npz dataset\p103_m_npz"  # 这里改成你的 npz 文件夹
 PRINT_FIRST_N = 5                      # 前多少个文件打印详细信息
-# ============================================
 
 
 def sizeof_fmt(num, suffix="B"):
@@ -26,7 +24,6 @@ def main():
 
     print(f"Found {len(npz_files)} .npz files in {NPZ_DIR}")
 
-    # 统计用
     color_shapes = Counter()
     depth_shapes = Counter()
     label_shapes = Counter()
@@ -39,7 +36,6 @@ def main():
     total_depth_bytes = 0
     total_label_bytes = 0
 
-    # 遍历所有 npz
     for idx, npz_path in enumerate(npz_files):
         try:
             # allow_pickle=False 更安全
@@ -50,7 +46,6 @@ def main():
 
         keys = set(data.files)
 
-        # ---- 检查必须的 key ----
         required_keys = {"color", "depth", "label"}
         if not required_keys.issubset(keys):
             print(f"[WARN] {os.path.basename(npz_path)} missing keys: {required_keys - keys}")
@@ -60,7 +55,6 @@ def main():
         depth = data["depth"]
         label = data["label"]
 
-        # ---- 统计 shape / dtype ----
         color_shapes[color.shape] += 1
         depth_shapes[depth.shape] += 1
         label_shapes[label.shape] += 1
@@ -69,12 +63,10 @@ def main():
         depth_dtypes[depth.dtype] += 1
         label_dtypes[label.dtype] += 1
 
-        # ---- 累计字节数 ----
         total_color_bytes += color.nbytes
         total_depth_bytes += depth.nbytes
         total_label_bytes += label.nbytes
 
-        # ---- 打印前 N 个样本的详细信息 ----
         if idx < PRINT_FIRST_N:
             print("=" * 60)
             print(f"[{idx}] File: {os.path.basename(npz_path)}")
@@ -85,7 +77,7 @@ def main():
 
         data.close()
 
-    # ================== 汇总信息 ==================
+
     print("\n" + "#" * 60)
     print("SUMMARY")
     print("#" * 60)

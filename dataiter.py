@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
 
-class NPZPoseDataset(Dataset):
+class MyDataset(Dataset):
     def __init__(self, npz_dir,
                  transform_color =  None,
                  transform_depth = None,
@@ -57,21 +57,19 @@ class NPZPoseDataset(Dataset):
 
 if __name__ == "__main__":
     npz_dir = r"D:\files\npz dataset\p7_m_npz"
-    # =======================================
+
     
-    # 创建 dataset
-    dataset = NPZPoseDataset(npz_dir=npz_dir, use_depth=False)
+    dataset = MyDataset(npz_dir=npz_dir, use_depth=False)
 
     print(f"Total samples: {len(dataset)}")
 
-    # 看一条样本
     color, label = dataset[0]
     print("Single sample:")
     print(f"  color.shape = {color.shape}, dtype = {color.dtype}")
     # print(f"  depth.shape = {depth.shape}, dtype = {depth.dtype}")
     print(f"  label       = {label}, dtype = {label.dtype}")
 
-    # 用 DataLoader 测一下 batch 维度
+
     loader = DataLoader(
         dataset,
         batch_size=8,
