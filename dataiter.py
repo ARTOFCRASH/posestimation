@@ -1,90 +1,88 @@
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-from PIL import Image
 import os
-import torch
-import torch.nn as nn
+import glob
 import numpy as np
+import torch
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 
 
-class MyData(Dataset):
-    def __init__(self, img_dir, color_trans=None, depth_trans=None, use_depth=True, roll=True, pitch=True):
-        self.img_dir = img_dir
-        self.color_transform = color_trans
-        self.depth_transform = depth_trans
-        self.imgs = [f for f in os.listdir(img_dir) if f.endswith('_color.png')]
+class NPZPoseDataset(Dataset):
+    def __init__(self, npz_dir,
+                 transform_color =  None,
+                 transform_depth = None,
+                 use_depth = True):
+
+        self.files = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
+        if len(self.files) == 0:
+            raise FileNotFoundError(f"No npz files in {npz_dir}")
+        
+        self.transform_color = transform_color
+        self.transform_depth = transform_depth
         self.use_depth = use_depth
-        self.roll = roll
-        self.pitch = pitch
+
 
     def __len__(self):
-        return len(self.imgs)
+        return len(self.files)
 
     def __getitem__(self, idx):
-        img_name = self.imgs[idx]
-        img_path = os.path.join(self.img_dir, img_name)
-        rgb_img = Image.open(img_path).convert('RGB')
+        path = self.files[idx]
+        data = np.load(path, allow_pickle=False)
 
-        # 变换
-        if self.color_transform:
-            rgb_img = self.color_transform(rgb_img)      # [3,H,W]
-
-        # 对应的灰度图
-        if self.use_depth:
-            depth_name = img_name.replace('_color.png', '_depth.png')
-
-            try:
-                depth_path = os.path.join(self.img_dir, depth_name)
-                depth_img = Image.open(depth_path).convert('L')
-
-                if self.depth_transform:
-                    depth_img = self.depth_transform(depth_img)
-
-                image = torch.cat([rgb_img, depth_img], dim=0)  # [4,H,W]
-
-            except FileNotFoundError:
-                print(f"Depth image not found: {depth_path}")
-                return None, None
-
+        # ----- color -----
+        color = data["color"]      # (H, W, 3), uint8
+        if self.transform_color:
+            color = self.transform_color(color)
         else:
-            image = rgb_img
+            # HWC uint8 -> CHW float32
+            color = torch.from_numpy(color).permute(2, 0, 1).float() / 255.0
 
-        # 从文件名解析标签
-        # 命名: x_y_z_p16_color.png
-        label_values = img_name.split('.')[0].split('_')[:2]
-        roll, pitch = map(float, label_values)
+        # ----- depth -----
+        if self.use_depth:
+                    depth = data["depth"]   # (H, W)
+                    if self.transform_depth:
+                        depth = self.transform_depth(depth)
+                    else:
+                        depth = torch.from_numpy(depth).unsqueeze(0).float()
+        else:
+            depth = None
 
-        # 归一化到 [-1,1]（因为范围是 -50°~50°）
-        roll = np.interp(roll, [-50, 50], [-1, 1])
-        pitch = np.interp(pitch, [-50, 50], [-1, 1])
+        # ----- label -----
+        label = torch.from_numpy(data["label"]).float()  # [roll, pitch]
 
-        labels = []
-        if self.roll:
-            labels.append(roll)
-        if self.pitch:
-            labels.append(pitch)
-
-        return image, torch.tensor(labels, dtype=torch.float32)
+        if self.use_depth:
+            return color, depth, label
+        else:
+            return color, label
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    npz_dir = r"D:\files\npz dataset\p7_m_npz"
+    # =======================================
+    
+    # 创建 dataset
+    dataset = NPZPoseDataset(npz_dir=npz_dir, use_depth=False)
 
-    color_transform = transforms.Compose([
-        transforms.Resize((150, 150)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5699, 0.4200, 0.3462), (0.3303, 0.2403, 0.2773))
-    ])
+    print(f"Total samples: {len(dataset)}")
 
-    depth_transform = transforms.Compose([
-        transforms.Resize((150, 150)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))  # 假设灰度均值=0.5, 方差=0.5
-    ])
+    # 看一条样本
+    color, label = dataset[0]
+    print("Single sample:")
+    print(f"  color.shape = {color.shape}, dtype = {color.dtype}")
+    # print(f"  depth.shape = {depth.shape}, dtype = {depth.dtype}")
+    print(f"  label       = {label}, dtype = {label.dtype}")
 
-    # 创建数据集实例
-    dataset = MyData(img_dir='/root/autodl-tmp/dataset/images/train',
-                    color_trans=color_transform,
-                    depth_trans= depth_transform,
-                    use_depth= True,
-                    roll=True,
-                    pitch=True)
+    # 用 DataLoader 测一下 batch 维度
+    loader = DataLoader(
+        dataset,
+        batch_size=8,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=False,
+        persistent_workers=True
+    )
+
+    for batch_idx, (c, l) in enumerate(loader):
+        print("\nFirst batch:")
+        print(f"  color batch shape = {c.shape}")   # [B, 3, H, W]
+        #print(f"  depth batch shape = {d.shape}")   # [B, 1, H, W]
+        print(f"  label batch shape = {l.shape}")   # [B, 2]
