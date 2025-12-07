@@ -3,7 +3,7 @@ import glob
 import numpy as np
 from collections import Counter
 
-NPZ_DIR = r"/root/autodl-tmp/npz dataset/p101_m_npz"  # 这里改成你的 npz 文件夹
+NPZ_DIR = r"/root/autodl-tmp/npz dataset/p98_m_npz"  # 这里改成你的 npz 文件夹
 PRINT_FIRST_N = 5                      # 前多少个文件打印详细信息
 
 
