@@ -1,5 +1,4 @@
-from torch.utils.data import ConcatDataset
-from dataiter3channels import MyData
+from dataiter import MyDataset
 import os
 import numpy as np
 import random
@@ -106,157 +105,164 @@ def directional_acc(roll_predicted, pitch_predicted, roll_label, pitch_label):
     return count_angle(pre, label)
 
 
-def create_concat_dataset(dir_list, transform=None, roll=False, pitch=False):
-    datasets = []
-    for d in dir_list:
-        ds = MyData(img_dir=d, trans=transform, roll=roll, pitch=pitch)
-        datasets.append(ds)
-    # ConcatDataset 会将多个单独的 Dataset 级联起来
-    concat_ds = ConcatDataset(datasets)
-    return concat_ds
+# ====================== 读 txt 文件列表 ======================
+def load_file_list(txt_path):
+    with open(txt_path, "r") as f:
+        return [line.strip() for line in f if line.strip()]
 
 
-# 23个文件的绝对路径
-all_dirs = []
-for i in range(1, 24):
-    folder_path = f"/root/autodl-tmp/croppedposeimages/data{i}"
-    all_dirs.append(folder_path)
+if __name__ == "__main__":
 
-# random.shuffle(all_dirs)
+    # ---------------------------- 超参数 ----------------------------
+    BATCH_SIZE = 32
+    LR = 1e-4
+    NUM_EPOCHS = 100
+    model_name = "ResNet_CBAM_RGBD_NPZ"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-folds = np.array_split(all_dirs, 5)  # 其中每个 folds[i] 是一个 numpy array，里面有4~5个文件夹路径
-NUM_FOLDS = 5
-all_fold_results = []  # 存放每折验证集的最终loss或别的指标
 
-# ----------------------------Hyperparameters--------------------------------------------------------
-transform = transforms.Compose([
-    transforms.ColorJitter(brightness=0.3, contrast=0.2, saturation=0.2, hue=0.1),
-    transforms.Resize((150, 150)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=(0.5699, 0.4200, 0.3462),
-                         std=(0.3303, 0.2403, 0.2773))
-])
-BATCH_SIZE = 128
-LR = 1e-6
-NUM_EPOCHS = 300  # 或者根据需要设置
-PATIENCE = 15  # 早停耐心
-model_name = 'ResNet_CBAM'
+    # 目前 MyDataset 里默认是：permute + /255.0
+    transform_color = None
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# -----------------------------------------------------------------------------------------------------------
+    # ---------------------------- 数据集 ----------------------------
+    train_list = load_file_list("train_files.txt")
+    val_list = load_file_list("val_files.txt")
 
-current_time = time.strftime("%m%d%H%M", time.localtime())
-save_dir = f'/root/autodl-tmp/results/{current_time}'
-os.makedirs(save_dir, exist_ok=True)
+    train_dataset = MyDataset(
+        train_list,
+        transform_color=transform_color,
+        transform_depth=None,
+        use_depth=True
+    )
+    val_dataset = MyDataset(
+        val_list,
+        transform_color=transform_color,
+        transform_depth=None,
+        use_depth=True
+    )
 
-# ========== 创建一个日志文件，写入超参数 ==========
-log_path = os.path.join(save_dir, "train_log.txt")
-with open(log_path, "w") as f:
-    f.write(f"=== Training Log ===\n")
-    f.write(f"Time: {current_time}\n")
-    f.write(f"Model: {model_name}\n")
-    f.write(f"LR: {LR}\n")
-    f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-    f.write(f"NUM_EPOCHS: {NUM_EPOCHS}\n")
-    f.write(f"PATIENCE: {PATIENCE}\n\n")
-
-# 用于统计所有折的最佳指标 (MAE, acc等)，方便最后求平均
-fold_best_mae_list = []
-fold_best_acc_list = []
-
-# 5折交叉验证
-for fold_idx in range(NUM_FOLDS):
-
-    fold_dir = os.path.join(save_dir, f"fold_{fold_idx + 1}")
-    os.makedirs(fold_dir, exist_ok=True)
-
-    best_model_path = os.path.join(fold_dir, "best.pth")
-    early_stopping = EarlyStopping(patience=PATIENCE, verbose=True, path=best_model_path)
-
-    val_dirs = folds[fold_idx]
-    train_dirs = []
-    for i in range(NUM_FOLDS):
-        if i != fold_idx:
-            train_dirs.extend(folds[i])
-
-    print(f"\n===== Fold {fold_idx + 1}/{NUM_FOLDS} =====")
-    print("Val set folders:", val_dirs)
-    print("Train set folders:", train_dirs)
-
-    train_dataset = create_concat_dataset(train_dirs, transform=transform, roll=True, pitch=True)  # roll or pitch?
-    val_dataset = create_concat_dataset(val_dirs, transform=transform, roll=True, pitch=True)  # roll or pitch?
     train_data_size = len(train_dataset)
-    test_data_size = len(val_dataset)
-    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
-    val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    val_data_size = len(val_dataset)
+    print(f"train dataset size: {train_data_size}")
+    print(f"val dataset size:   {val_data_size}")
 
-    model = ResNet_CBAM(2)
-    model = model.to(device)
-    loss_fn = nn.MSELoss()
-    loss_fn = loss_fn.to(device)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    # ---------------------------- 日志 & 保存目录 ----------------------------
+    current_time = time.strftime("%m%d%H%M", time.localtime())
+    save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    log_path = os.path.join(save_dir, "train_log.txt")
+    with open(log_path, "w") as f:
+        f.write(f"=== Training Log ===\n")
+        f.write(f"Time: {current_time}\n")
+        f.write(f"Model: {model_name}\n")
+        f.write(f"LR: {LR}\n")
+        f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
+        f.write(f"NUM_EPOCHS: {NUM_EPOCHS}\n\n")
+
+    writer = SummaryWriter(save_dir)
+    best_model_path = os.path.join(save_dir, "best.pth")
+
+    # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
+    model = ResNet_CBAM(2).to(device)      # 输出 [roll, pitch]
+    loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
-    writer = SummaryWriter(fold_dir)
 
-    total_train_step = 0  # 记录训练次数
-    total_test_step = 0  # 记录测试的次数
-    # 初始化最优指标
-    best_val_loss = float('inf')
+    total_train_step = 0
+    total_val_step = 0
+
+    best_val_loss = float("inf")
     best_avg_roll_diff = None
     best_avg_pitch_diff = None
-    best_test_acc = None
+    best_rmse = None
+    best_std = None
+    best_acc = None
     best_epoch = 0
 
-    # 训练
+    # ====================== 训练循环 ======================
     for epoch in range(NUM_EPOCHS):
         print(
-            f"===================={model_name}: {epoch + 1}th epoch started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}==========================")
-        start_time = time.time()
-        model.train()
-        train_loss = 0.0
+            f"===================={model_name}: Epoch {epoch + 1}/{NUM_EPOCHS} started at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}=========================="
+        )
+        epoch_start = time.time()
 
-        for rgb_inputs, depth_inputs, targets in tqdm(train_dataloader, total=len(train_dataloader)):
-            rgb_inputs, depth_inputs, targets = rgb_inputs.to(device), depth_inputs.to(device), targets.to(device)
-            output = model(rgb_inputs, depth_inputs)
-            loss = loss_fn(output, targets)
+        # -------------------- Train --------------------
+        model.train()
+        train_loss_epoch = 0.0
+
+        for rgb_inputs, depth_inputs, targets in tqdm(train_loader, total=len(train_loader)):
+            rgb_inputs = rgb_inputs.to(device)
+            depth_inputs = depth_inputs.to(device)
+            targets = targets.to(device)
+
+            outputs = model(rgb_inputs, depth_inputs)
+            loss = loss_fn(outputs, targets)
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            batch_size = rgb_inputs.size(0)
+            train_loss_epoch += loss.item() * batch_size
+
             total_train_step += 1
             if total_train_step % 100 == 0:
-                writer.add_scalar("training loss", loss.item(), global_step=total_train_step)
-            # 计算当前批次的总损失
-            train_loss += loss.item() * rgb_inputs.size(0)
+                writer.add_scalar("Train/Loss", loss.item(), global_step=total_train_step)
 
-        # One epoch finished
-        train_loss = train_loss / train_data_size
-        # 学习率更新
+        avg_train_loss = train_loss_epoch / train_data_size
         scheduler.step()
 
-        # 验证
-        total_val_accuracy = 0.0
-        total_val_loss = 0.0
+        # -------------------- Validation --------------------
         model.eval()
-        total_roll_diff = 0.0         # Roll mean absolute error
-        total_pitch_diff = 0.0        # Pitch mean absolute error
-        sum_squared_angle_error = 0.0    # directional root mean square error
-        all_angle_errors = []           # standard deviation
-        sample_count = 0
+        val_loss_epoch = 0.0
+        total_val_accuracy = 0.0
+        total_roll_diff = 0.0
+        total_pitch_diff = 0.0
+        sum_squared_angle_error = 0.0
+        all_angle_errors = []
+
         with torch.no_grad():
-            for rgb_inputs, depth_inputs, targets in val_dataloader:
-                rgb_inputs, depth_inputs, targets = rgb_inputs.to(device), depth_inputs.to(device), targets.to(device)
+            for rgb_inputs, depth_inputs, targets in val_loader:
+                rgb_inputs = rgb_inputs.to(device)
+                depth_inputs = depth_inputs.to(device)
+                targets = targets.to(device)
+
                 outputs = model(rgb_inputs, depth_inputs)
                 loss = loss_fn(outputs, targets)
-                total_val_loss = total_val_loss + loss.item()
-                diff = torch.abs(outputs - targets)
+
+                batch_size = rgb_inputs.size(0)
+                val_loss_epoch += loss.item() * batch_size
+
+                diff = torch.abs(outputs - targets)  # [N, 2]
                 # 误差小于3°视为准确
                 total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
-                # 计算roll和pitch的差值
+
+                # MAE (roll/pitch)
                 roll_diff = torch.abs(outputs[:, 0] - targets[:, 0])
                 pitch_diff = torch.abs(outputs[:, 1] - targets[:, 1])
                 total_roll_diff += roll_diff.sum().item()
                 total_pitch_diff += pitch_diff.sum().item()
 
+                # 方向角度误差 (RMSE / std)
                 roll_pred = outputs[:, 0].cpu().numpy()
                 pitch_pred = outputs[:, 1].cpu().numpy()
                 roll_true = targets[:, 0].cpu().numpy()
@@ -266,48 +272,61 @@ for fold_idx in range(NUM_FOLDS):
                     sum_squared_angle_error += angle_error ** 2
                     all_angle_errors.append(angle_error)
 
-        #  统计所有验证结果
-        avg_val_loss = total_val_loss / test_data_size
-        avg_roll_diff = total_roll_diff / test_data_size
-        avg_pitch_diff = total_pitch_diff / test_data_size
-        test_acc = total_val_accuracy / test_data_size
+        avg_val_loss = val_loss_epoch / val_data_size
+        avg_roll_diff = total_roll_diff / val_data_size
+        avg_pitch_diff = total_pitch_diff / val_data_size
+        val_acc = total_val_accuracy / val_data_size
+        rmse_angle = np.sqrt(sum_squared_angle_error / val_data_size)
         std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
-        rmse_angle = np.sqrt(sum_squared_angle_error / test_data_size)
 
-        total_test_step += 1
-
-        writer.add_scalar("validation Loss", avg_val_loss, total_test_step)
-        writer.add_scalar("validation Accuracy", test_acc, total_test_step)
-        writer.add_scalars("MAE", {'roll_MAE': avg_roll_diff, 'pitch_MAE': avg_pitch_diff}, total_test_step)
-        writer.add_scalar("Directional RMSE", rmse_angle, total_test_step)
-        writer.add_scalar("Directional SD", std_dev, total_test_step)
+        total_val_step += 1
+        writer.add_scalar("Val/Loss", avg_val_loss, total_val_step)
+        writer.add_scalar("Val/Accuracy", val_acc, total_val_step)
+        writer.add_scalars("Val/MAE", {
+            "roll_MAE": avg_roll_diff,
+            "pitch_MAE": avg_pitch_diff
+        }, total_val_step)
+        writer.add_scalar("Val/Directional_RMSE", rmse_angle, total_val_step)
+        writer.add_scalar("Val/Directional_SD", std_dev, total_val_step)
 
         print(
-            f'Epoch {epoch + 1}/{NUM_EPOCHS}, Train Loss: {train_loss:.4f}, Val Loss: {(total_val_loss / test_data_size):.4f}')
-        end_time = time.time()
-        print(f'this epoch takes time: {end_time - start_time}')
+            f"Epoch {epoch + 1}/{NUM_EPOCHS} | "
+            f"Train Loss: {avg_train_loss:.4f} | "
+            f"Val Loss: {avg_val_loss:.4f} | "
+            f"Val Acc: {val_acc:.4f} | "
+            f"Roll MAE: {avg_roll_diff:.4f} | Pitch MAE: {avg_pitch_diff:.4f} | "
+            f"Angle RMSE: {rmse_angle:.4f} | Angle std: {std_dev:.4f}"
+        )
+        epoch_end = time.time()
+        print(f"this epoch takes time: {epoch_end - epoch_start:.2f} s")
+
+        # -------- 保存最佳模型（按 val loss，不是 checkpoint，只是 best.pth）--------
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_avg_roll_diff = avg_roll_diff
             best_avg_pitch_diff = avg_pitch_diff
             best_rmse = rmse_angle
             best_std = std_dev
-            best_test_acc = test_acc
-            best_epoch = epoch + 1  # 保存最佳的 epoch
+            best_acc = val_acc
+            best_epoch = epoch + 1
 
-        early_stopping(total_val_loss / test_data_size, model)
-        if early_stopping.early_stop:
-            print("early stopping")
-            break
+            torch.save(model.state_dict(), best_model_path)
+            print(f"✅ Saved new best model at epoch {epoch + 1}, val loss={avg_val_loss:.4f}")
 
-    # ==========  写入日志文件该折信息 ==========
+    # --------- 写最终结果到日志 ----------
     with open(log_path, "a") as f:
-        f.write(f"Fold {fold_idx + 1} best epoch = {best_epoch}, "
-                f"best MAE (roll) = {best_avg_roll_diff:.4f}, best MAE (pitch) = {best_avg_pitch_diff:.4f}, "
-                f"best RMSE = {best_rmse:.4f}, "
-                f"best std = {best_std:.4f}, "
-                f"best Accuracy = {best_test_acc:.4f}\n")
+        f.write(
+            f"Best epoch = {best_epoch}, "
+            f"best MAE (roll) = {best_avg_roll_diff:.4f}, "
+            f"best MAE (pitch) = {best_avg_pitch_diff:.4f}, "
+            f"best RMSE = {best_rmse:.4f}, "
+            f"best std = {best_std:.4f}, "
+            f"best Accuracy = {best_acc:.4f}\n"
+        )
 
     writer.close()
+    print("Training finished.")
+    print(f"Best epoch: {best_epoch}, best val loss: {best_val_loss:.4f}")
+    print(f"Best model saved to: {best_model_path}")
 
 
