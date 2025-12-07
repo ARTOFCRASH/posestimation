@@ -124,21 +124,24 @@ if __name__ == "__main__":
     save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
     # 目前 MyDataset 里默认是：permute + /255.0
     transform_color = None
-
+    transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Resize((224, 224))
+])
     # ---------------------------- 数据集 ----------------------------
     train_list = load_file_list("train_files.txt")
     val_list = load_file_list("val_files.txt")
 
     train_dataset = MyDataset(
         train_list,
-        transform_color=transform_color,
-        transform_depth=None,
+        transform_color=transform,
+        transform_depth=transform,
         use_depth=True
     )
     val_dataset = MyDataset(
         val_list,
-        transform_color=transform_color,
-        transform_depth=None,
+        transform_color=transform,
+        transform_depth=transform,
         use_depth=True
     )
 
