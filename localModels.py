@@ -160,6 +160,41 @@ class IAGF_Module(nn.Module):
         return F_final
 
 
+class ResNet18(nn.Module):
+    def __init__(self, in_channels=4, pretrained=False, out_dim=2):
+        super().__init__()
+
+        self.backbone = models.resnet18(
+            weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        )
+
+        if in_channels != 3:
+            old_conv = self.backbone.conv1
+            self.backbone.conv1 = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=old_conv.bias is not None
+            )
+
+            if pretrained and in_channels > 3:
+                with torch.no_grad():
+                    self.backbone.conv1.weight[:, :3, :, :] = old_conv.weight
+                    mean_weight = old_conv.weight.mean(dim=1, keepdim=True)
+                    for c in range(3, in_channels):
+                        self.backbone.conv1.weight[:, c:c+1, :, :] = mean_weight
+            else:
+                nn.init.kaiming_normal_(self.backbone.conv1.weight, mode='fan_out', nonlinearity='relu')
+
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Linear(in_features, out_dim)
+
+    def forward(self, color, depth):
+        return self.backbone(torch.cat([color, depth], dim=1))
+
+
 if __name__ == '__main__':
     # Testing
     model = CBAM(in_planes=256)

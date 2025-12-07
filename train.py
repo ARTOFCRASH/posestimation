@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from pytorchtools import EarlyStopping
 from torch.utils.tensorboard import SummaryWriter
 import timm
-from localModels import ResNet_CBAM
+from localModels import ResNet_CBAM, ResNet18
 from tqdm import tqdm
 import torch.nn.init as init
 
@@ -114,13 +114,14 @@ def load_file_list(txt_path):
 if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE = 32
     LR = 1e-4
     NUM_EPOCHS = 100
     model_name = "ResNet_CBAM_RGBD_NPZ"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
+    model = ResNet18(out_dim=2).to(device)      # 输出 [roll, pitch]
+    current_time = time.strftime("%m%d%H%M", time.localtime())
+    save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
     # 目前 MyDataset 里默认是：permute + /255.0
     transform_color = None
 
@@ -165,8 +166,6 @@ if __name__ == "__main__":
     )
 
     # ---------------------------- 日志 & 保存目录 ----------------------------
-    current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
     os.makedirs(save_dir, exist_ok=True)
 
     log_path = os.path.join(save_dir, "train_log.txt")
@@ -182,7 +181,6 @@ if __name__ == "__main__":
     best_model_path = os.path.join(save_dir, "best.pth")
 
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
-    model = ResNet_CBAM(2).to(device)      # 输出 [roll, pitch]
     loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
