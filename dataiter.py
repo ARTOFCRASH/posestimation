@@ -7,19 +7,18 @@ from torch.utils.data import DataLoader
 
 
 class MyDataset(Dataset):
-    def __init__(self, npz_dir,
-                 transform_color =  None,
-                 transform_depth = None,
-                 use_depth = True):
+    def __init__(self, files,
+                 transform_color=None,
+                 transform_depth=None,
+                 use_depth=True):
 
-        self.files = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
+        self.files = files
         if len(self.files) == 0:
-            raise FileNotFoundError(f"No npz files in {npz_dir}")
+            raise FileNotFoundError("Empty file list!")
         
         self.transform_color = transform_color
         self.transform_depth = transform_depth
         self.use_depth = use_depth
-
 
     def __len__(self):
         return len(self.files)
@@ -28,25 +27,21 @@ class MyDataset(Dataset):
         path = self.files[idx]
         data = np.load(path, allow_pickle=False)
 
-        # ----- color -----
-        color = data["color"]      # (H, W, 3), uint8
+        color = data["color"]
         if self.transform_color:
             color = self.transform_color(color)
         else:
-            # HWC uint8 -> CHW float32
             color = torch.from_numpy(color).permute(2, 0, 1).float() / 255.0
 
-        # ----- depth -----
         if self.use_depth:
-                    depth = data["depth"]   # (H, W)
-                    if self.transform_depth:
-                        depth = self.transform_depth(depth)
-                    else:
-                        depth = torch.from_numpy(depth).unsqueeze(0).float()
+            depth = data["depth"]
+            if self.transform_depth:
+                depth = self.transform_depth(depth)
+            else:
+                depth = torch.from_numpy(depth).unsqueeze(0).float()
         else:
             depth = None
 
-        # ----- label -----
         label = torch.from_numpy(data["label"]).float()  # [roll, pitch]
 
         if self.use_depth:
@@ -56,32 +51,51 @@ class MyDataset(Dataset):
 
 
 if __name__ == "__main__":
-    npz_dir = r"/root/autodl-tmp/npz dataset/p100_m_npz"
 
-    
-    dataset = MyDataset(npz_dir=npz_dir, use_depth=True)
+    def load_file_list(txt_path):
+        with open(txt_path, "r") as f:
+            return [line.strip() for line in f if line.strip()]
 
-    print(f"Total samples: {len(dataset)}")
+            
+    train_list = load_file_list("train_files.txt")
+    val_list   = load_file_list("val_files.txt")
 
-    color, depth, label = dataset[0]
-    print("Single sample:")
+    train_dataset = MyDataset(train_list, use_depth=True)
+    val_dataset   = MyDataset(val_list, use_depth=True)
+
+    print(f"train dataset: {len(train_dataset)}")
+    print(f"val dataset:   {len(val_dataset)}")
+
+    # 取一个样本打印信息
+    color, depth, label = train_dataset[0]
+
+    print("\nSingle sample:")
     print(f"  color.shape = {color.shape}, dtype = {color.dtype}")
     print(f"  depth.shape = {depth.shape}, dtype = {depth.dtype}")
     print(f"  label       = {label}, dtype = {label.dtype}")
 
-
-    loader = DataLoader(
-        dataset,
-        batch_size=8,
+    # dataloader
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=32,
         shuffle=True,
         num_workers=4,
-        pin_memory=False,
+        pin_memory=True,
         persistent_workers=True
     )
 
-    for batch_idx, (c,d, l) in enumerate(loader):
-        print("\nFirst batch:")
-        print(f"  color batch shape = {c.shape}")   # [B, 3, H, W]
-        print(f"  depth batch shape = {d.shape}")   # [B, 1, H, W]
-        print(f"  label batch shape = {l.shape}")   # [B, 2]
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=32,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    for color, depth, label in train_loader:
+        print("Batch:")
+        print("  color:", color.shape)
+        print("  depth:", depth.shape)
+        print("  label:", label.shape)
         break
