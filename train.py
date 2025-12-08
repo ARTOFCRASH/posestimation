@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from pytorchtools import EarlyStopping
 from torch.utils.tensorboard import SummaryWriter
 import timm
-from localModels import ResNet_CBAM, ResNet18
+from models import ResNet_CBAM, ResNet18
 from tqdm import tqdm
 import torch.nn.init as init
 
