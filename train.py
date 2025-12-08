@@ -105,6 +105,22 @@ def directional_acc(roll_predicted, pitch_predicted, roll_label, pitch_label):
     return count_angle(pre, label)
 
 
+class DepthNormalize(object):
+    '''
+    valid depth min over dataset: 73
+    valid depth max over dataset: 149
+    mean depth range: 80.346625  ~  123.958125
+    '''
+    def __init__(self, max_depth=160.0):
+        self.max_depth = max_depth
+
+    def __call__(self, depth: torch.Tensor):
+        # depth: [1, H, W], float
+        depth = depth / self.max_depth
+        depth = torch.clamp(depth, 0.0, 1.0)
+        return depth
+
+
 # ====================== 读 txt 文件列表 ======================
 def load_file_list(txt_path):
     with open(txt_path, "r") as f:
@@ -138,22 +154,6 @@ if __name__ == "__main__":
     ])
 
     val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
-
-
-    class DepthNormalize(object):
-        '''
-        valid depth min over dataset: 73
-        valid depth max over dataset: 149
-        mean depth range: 80.346625  ~  123.958125
-        '''
-        def __init__(self, max_depth=160.0):
-            self.max_depth = max_depth
-
-        def __call__(self, depth: torch.Tensor):
-            # depth: [1, H, W], float
-            depth = depth / self.max_depth
-            depth = torch.clamp(depth, 0.0, 1.0)
-            return depth
 
 
     train_depth_transform = DepthNormalize(max_depth=160.0)
