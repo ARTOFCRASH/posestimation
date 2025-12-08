@@ -131,11 +131,11 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 32
+    BATCH_SIZE = 128
     LR = 1e-4
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 80
     model_name = "ResNet_CBAM_RGBD_NPZ"
-    model = ResNet18(out_dim=2).to(device)      # 输出 [roll, pitch]
+    model = ResNet18(in_channels=4, pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
     save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
 
@@ -217,7 +217,7 @@ if __name__ == "__main__":
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
     loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=90, gamma=0.1)
 
     total_train_step = 0
     total_val_step = 0
