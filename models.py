@@ -1,3 +1,4 @@
+from hmac import new
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -170,7 +171,7 @@ class ResNet18(nn.Module):
 
         if in_channels != 3:
             old_conv = self.backbone.conv1
-            self.backbone.conv1 = nn.Conv2d(
+            new_conv = nn.Conv2d(
                 in_channels,
                 old_conv.out_channels,
                 kernel_size=old_conv.kernel_size,
@@ -181,12 +182,15 @@ class ResNet18(nn.Module):
 
             if pretrained and in_channels > 3:
                 with torch.no_grad():
-                    self.backbone.conv1.weight[:, :3, :, :] = old_conv.weight
-                    mean_weight = old_conv.weight.mean(dim=1, keepdim=True)
-                    for c in range(3, in_channels):
-                        self.backbone.conv1.weight[:, c:c+1, :, :] = mean_weight
+                    nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
+                    new_conv.weight[:, :3, :, :] = old_conv.weight
+
+                    if old_conv.bias is not None:
+                        new_conv.bias.copy_(old_conv.bias)
             else:
-                nn.init.kaiming_normal_(self.backbone.conv1.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
+            
+            self.backbone.conv1 = new_conv
 
         in_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Linear(in_features, out_dim)

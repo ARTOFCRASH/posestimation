@@ -122,22 +122,57 @@ if __name__ == "__main__":
     model = ResNet18(out_dim=2).to(device)      # 输出 [roll, pitch]
     current_time = time.strftime("%m%d%H%M", time.localtime())
     save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
+
+    imagenet_mean = [0.485, 0.456, 0.406]
+    imagenet_std  = [0.229, 0.224, 0.225]
     # 目前 MyDataset 里默认是：permute + /255.0
-    transform_color = None
+    train_color_transform = transforms.Compose([
+    transforms.ColorJitter(
+        brightness=0.2,   # 亮度 ±20%
+        contrast=0.2,
+        saturation=0.2,
+        hue=0.02
+    ),
+    transforms.RandomGrayscale(p=0.1),    # 偶尔变黑白
+    transforms.Normalize(imagenet_mean, imagenet_std),
+    ])
+
+    val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
+
+
+    class DepthNormalize(object):
+        '''
+        valid depth min over dataset: 73
+        valid depth max over dataset: 149
+        mean depth range: 80.346625  ~  123.958125
+        '''
+        def __init__(self, max_depth=160.0):
+            self.max_depth = max_depth
+
+        def __call__(self, depth: torch.Tensor):
+            # depth: [1, H, W], float
+            depth = depth / self.max_depth
+            depth = torch.clamp(depth, 0.0, 1.0)
+            return depth
+
+
+    train_depth_transform = DepthNormalize(max_depth=160.0)
+    val_depth_transform   = DepthNormalize(max_depth=160.0)
+
     # ---------------------------- 数据集 ----------------------------
     train_list = load_file_list("train_files.txt")
     val_list = load_file_list("val_files.txt")
 
     train_dataset = MyDataset(
         train_list,
-        transform_color=transform_color,
-        transform_depth=None,
+        transform_color=train_color_transform,
+        transform_depth=train_depth_transform,
         use_depth=True
     )
     val_dataset = MyDataset(
         val_list,
-        transform_color=transform_color,
-        transform_depth=None,
+        transform_color=val_color_transform,
+        transform_depth=val_depth_transform,
         use_depth=True
     )
 

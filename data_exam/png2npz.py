@@ -6,8 +6,8 @@ import numpy as np
 from tqdm import tqdm
 
 
-SRC_DIR = r"D:\files\C++projects\images generate\build\Debug\p89_m"
-DST_DIR = r"D:\files\npz dataset\p89_m_npz"   # 输出 npz 的目录
+SRC_DIR = r"D:\files\C++projects\images generate\build\Debug\p7_m"
+DST_DIR = r"D:\files\npz dataset\p7_m_npz"   # 输出 npz 的目录
 os.makedirs(DST_DIR, exist_ok=True)
 
 COLOR_SUFFIX = "_color.png"
