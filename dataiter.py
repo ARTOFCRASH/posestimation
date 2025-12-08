@@ -5,6 +5,9 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from PIL import Image
+import matplotlib.pyplot as plt
+import math
 
 
 class MyDataset(Dataset):
@@ -227,9 +230,85 @@ if __name__ == "__main__":
         persistent_workers=True
     )
 
+
+    def concat_color_depth_single(color_t, depth_t):
+        """
+        color_t: [3,H,W] float tensor
+        depth_t: [1,H,W] float tensor
+        返回：PIL Image，左右拼接： [ COLOR | DEPTH ]
+        """
+        # color: [3,H,W] -> [H,W,3] uint8
+        color_np = (color_t.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        img_color = Image.fromarray(color_np)  # RGB
+
+        # depth: [1,H,W] -> 灰度 uint8
+        depth_np = depth_t[0].cpu().numpy()
+        if depth_np.max() > 0:
+            depth_norm = (depth_np - depth_np.min()) / (depth_np.max() - depth_np.min() + 1e-6)
+        else:
+            depth_norm = depth_np
+        depth_img = (depth_norm * 255).astype(np.uint8)
+        img_depth = Image.fromarray(depth_img)  # L
+
+        # 灰度转 3 通道
+        img_depth_rgb = img_depth.convert("RGB")
+
+        # 左右拼接
+        W_total = img_color.width + img_depth_rgb.width
+        H_max   = max(img_color.height, img_depth_rgb.height)
+        concat_img = Image.new("RGB", (W_total, H_max))
+        concat_img.paste(img_color, (0, 0))
+        concat_img.paste(img_depth_rgb, (img_color.width, 0))
+
+        return concat_img
+
+
+    def show_batch_color_depth(color_batch, depth_batch, n_cols=4, show=True):
+        """
+        color_batch: [B,3,H,W]
+        depth_batch: [B,1,H,W]
+        n_cols: 一行放多少个样本（每个样本已经是 COLOR|DEPTH）
+        show: 是否直接 .show()
+
+        返回: grid_img (PIL Image)
+        """
+        B = color_batch.size(0)
+        # 先把每个样本的 COLOR|DEPTH 拼出来
+        imgs = []
+        for i in range(B):
+            img = concat_color_depth_single(color_batch[i], depth_batch[i])
+            imgs.append(img)
+
+        if len(imgs) == 0:
+            return None
+
+        # 假设每个拼好的图尺寸相同
+        w_single, h_single = imgs[0].size
+
+        n_rows = math.ceil(B / n_cols)
+        grid_w = w_single * n_cols
+        grid_h = h_single * n_rows
+
+        grid_img = Image.new("RGB", (grid_w, grid_h))
+
+        for idx, img in enumerate(imgs):
+            row = idx // n_cols
+            col = idx % n_cols
+            x = col * w_single
+            y = row * h_single
+            grid_img.paste(img, (x, y))
+
+        if show:
+            grid_img.show()
+
+        return grid_img
+
+
     for color, depth, label in train_loader:
         print("Batch:")
         print("  color:", color.shape)
         print("  depth:", depth.shape)
         print("  label:", label.shape)
+        grid_img = show_batch_color_depth(color, depth, n_cols=4, show=True)
+        grid_img.save("batch1.png")
         break
