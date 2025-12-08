@@ -271,7 +271,8 @@ if __name__ == "__main__":
         total_pitch_diff = 0.0
         sum_squared_angle_error = 0.0
         all_angle_errors = []
-
+        total_correct_angle = 0
+        
         with torch.no_grad():
             for rgb_inputs, depth_inputs, targets in val_loader:
                 rgb_inputs = rgb_inputs.to(device)
@@ -284,9 +285,9 @@ if __name__ == "__main__":
                 batch_size = rgb_inputs.size(0)
                 val_loss_epoch += loss.item() * batch_size
 
-                diff = torch.abs(outputs - targets)  # [N, 2]
+                # diff = torch.abs(outputs - targets)  # [N, 2]
                 # 误差小于3°视为准确
-                total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
+                # total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
 
                 # MAE (roll/pitch)
                 roll_diff = torch.abs(outputs[:, 0] - targets[:, 0])
@@ -303,11 +304,14 @@ if __name__ == "__main__":
                     angle_error = directional_acc(rp, pp, rt, pt)
                     sum_squared_angle_error += angle_error ** 2
                     all_angle_errors.append(angle_error)
+                    if angle_error <= 3.0:
+                        total_correct_angle += 1
 
         avg_val_loss = val_loss_epoch / val_data_size
         avg_roll_diff = total_roll_diff / val_data_size
         avg_pitch_diff = total_pitch_diff / val_data_size
-        val_acc = total_val_accuracy / val_data_size
+        # val_acc = total_val_accuracy / val_data_size
+        val_acc = total_correct_angle / val_data_size
         rmse_angle = np.sqrt(sum_squared_angle_error / val_data_size)
         std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
 
