@@ -134,7 +134,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 128
     LR = 1e-4
     NUM_EPOCHS = 80
-    model_name = "ResNet_CBAM_RGBD_NPZ"
+    model_name = "ResNet18_RGBD"
     model = ResNet18(in_channels=4, pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
     save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
