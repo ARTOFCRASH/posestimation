@@ -8,7 +8,7 @@ from collections import defaultdict
 ROOT_DIR = r"/root/autodl-tmp/npz dataset"
 
 # 要检查的子文件夹名字
-TARGET_DIRS = ["p22_l_npz"]
+TARGET_DIRS = ["p54_m_npz"]
 
 # 期望的 roll / pitch 范围
 ROLL_MIN, ROLL_MAX = -50, 50

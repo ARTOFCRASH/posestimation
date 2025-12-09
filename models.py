@@ -5,7 +5,14 @@ import torch.nn.functional as F
 import copy
 import torchvision.models as models
 
+try:
+    # 新版 torchvision (PyTorch 2.x)
+    from torchvision.models import ResNet18_Weights
+    _HAS_NEW_WEIGHTS_API = True
+except ImportError:
+    _HAS_NEW_WEIGHTS_API = False
 
+    
 class ChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=16):
         super(ChannelAttention, self).__init__()
@@ -161,42 +168,105 @@ class IAGF_Module(nn.Module):
         return F_final
 
 
-class ResNet18(nn.Module):
-    def __init__(self, in_channels=4, pretrained=False, out_dim=2):
+class ResNet18_RGBD(nn.Module):
+    def __init__(self, pretrained=True, out_dim=2):
         super().__init__()
 
-        self.backbone = models.resnet18(
+        backbone = models.resnet18(
             weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
         )
 
-        if in_channels != 3:
-            old_conv = self.backbone.conv1
-            new_conv = nn.Conv2d(
-                in_channels,
-                old_conv.out_channels,
-                kernel_size=old_conv.kernel_size,
-                stride=old_conv.stride,
-                padding=old_conv.padding,
-                bias=old_conv.bias is not None
-            )
+        # RGB分支用原来的 conv1
+        #    conv1: [64, 3, 7, 7], stride=2, padding=3
+        self.rgb_conv1 = backbone.conv1
+        self.bn1 = backbone.bn1
+        self.relu = backbone.relu
+        self.maxpool = backbone.maxpool
 
-            if pretrained and in_channels > 3:
-                with torch.no_grad():
-                    nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
-                    new_conv.weight[:, :3, :, :] = old_conv.weight
+        # Depth分支: 独立的 conv1, 不共享权重
+        #    输入 1 通道, 输出 64 通道, 和 rgb_conv1 对齐        
+        self.depth_conv1 = nn.Conv2d(
+            in_channels=1,
+            out_channels=self.rgb_conv1.out_channels,
+            kernel_size=self.rgb_conv1.kernel_size,
+            stride=self.rgb_conv1.stride,
+            padding=self.rgb_conv1.padding,
+            bias=False
+        )
+        # 初始化深度卷积
+        nn.init.kaiming_normal_(self.depth_conv1.weight, mode="fan_out", nonlinearity="relu")
 
-                    if old_conv.bias is not None:
-                        new_conv.bias.copy_(old_conv.bias)
-            else:
-                nn.init.kaiming_normal_(new_conv.weight, mode='fan_out', nonlinearity='relu')
-            
-            self.backbone.conv1 = new_conv
+        
+        #后面的层全部复用 ResNet18 的骨干
+        self.layer1 = backbone.layer1
+        self.layer2 = backbone.layer2
+        self.layer3 = backbone.layer3
+        self.layer4 = backbone.layer4
 
-        in_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Linear(in_features, out_dim)
+        self.avgpool = backbone.avgpool
+
+        in_features = backbone.fc.in_features  # 512
+        self.fc = nn.Linear(in_features, out_dim)
+
 
     def forward(self, color, depth):
-        return self.backbone(torch.cat([color, depth], dim=1))
+        x_rgb = self.rgb_conv1(color)
+        x_depth = self.depth_conv1(depth)
+        
+        # 特征融合
+        x = x_rgb + x_depth
+
+        # 后续和ResNet18一模一样
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)        # [B, 512, 1, 1]
+        x = torch.flatten(x, 1)    # [B, 512]
+        x = self.fc(x)             # [B, out_dim]
+
+        return x
+
+
+class ResNet18_RGB(nn.Module):
+    """
+    纯 RGB 版 ResNet18，用于回归 [roll, pitch] 等连续值。
+
+    输入:
+        x: [B, 3, H, W]
+           - 已经做了 /255.0
+           - 再用 ImageNet mean/std 归一化
+
+    输出:
+        [B, out_dim]  比如 out_dim=2 => [roll, pitch]
+    """
+    def __init__(self, pretrained: bool = True, out_dim: int = 2):
+        super().__init__()
+
+        # 1) 加载 ImageNet 预训练 ResNet18
+        if _HAS_NEW_WEIGHTS_API:
+            backbone = models.resnet18(
+                weights=ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+            )
+        else:
+            backbone = models.resnet18(pretrained=pretrained)
+
+        # 2) 替换最后的全连接层为回归头
+        in_features = backbone.fc.in_features  # 512
+        backbone.fc = nn.Linear(in_features, out_dim)
+
+        self.backbone = backbone
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, 3, H, W]
+        """
+        return self.backbone(x)
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 
 # ==== 配置这里 =====================================================
-ROOT_DIR = r"/root/autodl-tmp/npz dataset"
+ROOT_DIR = r"/root/autodl-tmp/npz_dataset_cropped256"
 EXPECTED_FOLDER_COUNT = 103
 EXPECTED_NPZ_PER_FOLDER = 10201
 # ==================================================================

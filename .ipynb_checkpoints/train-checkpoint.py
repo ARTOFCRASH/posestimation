@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from pytorchtools import EarlyStopping
 from torch.utils.tensorboard import SummaryWriter
 import timm
-from models import ResNet_CBAM, ResNet18
+from models import ResNet_CBAM, ResNet18_RGBD, ResNet18_RGB
 from tqdm import tqdm
 import torch.nn.init as init
 
@@ -105,6 +105,22 @@ def directional_acc(roll_predicted, pitch_predicted, roll_label, pitch_label):
     return count_angle(pre, label)
 
 
+class DepthNormalize(object):
+    '''
+    valid depth min over dataset: 73
+    valid depth max over dataset: 149
+    mean depth range: 80.346625  ~  123.958125
+    '''
+    def __init__(self, max_depth=160.0):
+        self.max_depth = max_depth
+
+    def __call__(self, depth: torch.Tensor):
+        # depth: [1, H, W], float
+        depth = depth / self.max_depth
+        depth = torch.clamp(depth, 0.0, 1.0)
+        return depth
+
+
 # ====================== 读 txt 文件列表 ======================
 def load_file_list(txt_path):
     with open(txt_path, "r") as f:
@@ -115,30 +131,53 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 32
-    LR = 1e-4
-    NUM_EPOCHS = 100
-    model_name = "ResNet_CBAM_RGBD_NPZ"
-    model = ResNet18(out_dim=2).to(device)      # 输出 [roll, pitch]
+    BATCH_SIZE = 256
+    LR = 5e-5
+    NUM_EPOCHS = 80
+    USE_DEPTH = True
+    model_name = "ResNet18_RGBD"
+    model = ResNet18_RGBD(pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train3/"
+
+    imagenet_mean = [0.485, 0.456, 0.406]
+    imagenet_std  = [0.229, 0.224, 0.225]
     # 目前 MyDataset 里默认是：permute + /255.0
-    transform_color = None
+    train_color_transform = transforms.Compose([
+    transforms.ColorJitter(
+        brightness=0.2,   # 亮度 ±20%
+        contrast=0.2,
+        saturation=0.2,
+        hue=0.02
+    ),
+    transforms.RandomGrayscale(p=0.1),    # 偶尔变黑白
+    transforms.Normalize(imagenet_mean, imagenet_std),
+    ])
+
+    val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
+
+    if USE_DEPTH:
+        train_depth_transform = DepthNormalize(max_depth=160.0)
+        val_depth_transform   = DepthNormalize(max_depth=160.0)
+    else:
+        train_depth_transform = None
+        val_depth_transform   = None
+
     # ---------------------------- 数据集 ----------------------------
     train_list = load_file_list("train_files.txt")
     val_list = load_file_list("val_files.txt")
 
     train_dataset = MyDataset(
         train_list,
-        transform_color=transform_color,
-        transform_depth=None,
-        use_depth=True
+        transform_color=train_color_transform,
+        transform_depth=train_depth_transform,
+        use_depth=USE_DEPTH
     )
     val_dataset = MyDataset(
         val_list,
-        transform_color=transform_color,
-        transform_depth=None,
-        use_depth=True
+        transform_color=val_color_transform,
+        transform_depth=val_depth_transform,
+        use_depth=USE_DEPTH
     )
 
     train_data_size = len(train_dataset)
@@ -150,7 +189,7 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True
     )
@@ -159,7 +198,7 @@ if __name__ == "__main__":
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True
     )
@@ -174,15 +213,16 @@ if __name__ == "__main__":
         f.write(f"Model: {model_name}\n")
         f.write(f"LR: {LR}\n")
         f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
+        f.write(f"USE_DEPTH: {USE_DEPTH}\n")
         f.write(f"NUM_EPOCHS: {NUM_EPOCHS}\n\n")
-
+        
     writer = SummaryWriter(save_dir)
     best_model_path = os.path.join(save_dir, "best.pth")
 
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
     loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=90, gamma=0.1)
 
     total_train_step = 0
     total_val_step = 0
@@ -194,7 +234,8 @@ if __name__ == "__main__":
     best_std = None
     best_acc = None
     best_epoch = 0
-
+    
+    scaler = torch.amp.GradScaler("cuda")
     # ====================== 训练循环 ======================
     for epoch in range(NUM_EPOCHS):
         print(
@@ -206,17 +247,31 @@ if __name__ == "__main__":
         model.train()
         train_loss_epoch = 0.0
 
-        for rgb_inputs, depth_inputs, targets in tqdm(train_loader, total=len(train_loader)):
-            rgb_inputs = rgb_inputs.to(device)
-            depth_inputs = depth_inputs.to(device)
-            targets = targets.to(device)
-
-            outputs = model(rgb_inputs, depth_inputs)
-            loss = loss_fn(outputs, targets)
+        for batch in tqdm(train_loader, total=len(train_loader)):
+            if USE_DEPTH:
+                rgb_inputs, depth_inputs, targets = batch
+                rgb_inputs = rgb_inputs.to(device, non_blocking=True)
+                depth_inputs = depth_inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+            else:
+                rgb_inputs, targets = batch
+                rgb_inputs = rgb_inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                depth_inputs = None
 
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            
+            with torch.amp.autocast("cuda"):
+                if USE_DEPTH:
+                    outputs = model(rgb_inputs, depth_inputs)
+                else:
+                    outputs = model(rgb_inputs)
+                    
+                loss = loss_fn(outputs, targets)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             batch_size = rgb_inputs.size(0)
             train_loss_epoch += loss.item() * batch_size
@@ -236,22 +291,34 @@ if __name__ == "__main__":
         total_pitch_diff = 0.0
         sum_squared_angle_error = 0.0
         all_angle_errors = []
-
+        total_correct_angle = 0
+        
         with torch.no_grad():
-            for rgb_inputs, depth_inputs, targets in val_loader:
-                rgb_inputs = rgb_inputs.to(device)
-                depth_inputs = depth_inputs.to(device)
-                targets = targets.to(device)
+            for batch in val_loader:
+                if USE_DEPTH:
+                    rgb_inputs, depth_inputs, targets = batch
+                    rgb_inputs = rgb_inputs.to(device)
+                    depth_inputs = depth_inputs.to(device)
+                    targets = targets.to(device)
+                else:
+                    rgb_inputs, targets = batch
+                    rgb_inputs = rgb_inputs.to(device)
+                    targets = targets.to(device)
+                    depth_inputs = None
 
-                outputs = model(rgb_inputs, depth_inputs)
+                if USE_DEPTH:
+                    outputs = model(rgb_inputs, depth_inputs)
+                else:
+                    outputs = model(rgb_inputs)
+                    
                 loss = loss_fn(outputs, targets)
 
                 batch_size = rgb_inputs.size(0)
                 val_loss_epoch += loss.item() * batch_size
 
-                diff = torch.abs(outputs - targets)  # [N, 2]
+                # diff = torch.abs(outputs - targets)  # [N, 2]
                 # 误差小于3°视为准确
-                total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
+                # total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
 
                 # MAE (roll/pitch)
                 roll_diff = torch.abs(outputs[:, 0] - targets[:, 0])
@@ -268,11 +335,14 @@ if __name__ == "__main__":
                     angle_error = directional_acc(rp, pp, rt, pt)
                     sum_squared_angle_error += angle_error ** 2
                     all_angle_errors.append(angle_error)
+                    if angle_error <= 3.0:
+                        total_correct_angle += 1
 
         avg_val_loss = val_loss_epoch / val_data_size
         avg_roll_diff = total_roll_diff / val_data_size
         avg_pitch_diff = total_pitch_diff / val_data_size
-        val_acc = total_val_accuracy / val_data_size
+        # val_acc = total_val_accuracy / val_data_size
+        val_acc = total_correct_angle / val_data_size
         rmse_angle = np.sqrt(sum_squared_angle_error / val_data_size)
         std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
 

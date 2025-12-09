@@ -3,7 +3,7 @@ import glob
 import random
 
 # 数据集根目录
-root_dir = r"D:\files\persimmon data\npz dataset"
+root_dir = r"/root/autodl-tmp/npz_dataset_cropped256"
 random.seed(42)
 
 
@@ -20,7 +20,7 @@ random.shuffle(all_obj_dirs)
 
 # 按比例切分
 n_train = int(num_obj * 0.8)
-n_val   = int(num_obj * 0.2)
+n_val   = num_obj - n_train
 # n_test  = num_obj - n_train - n_val
 
 train_objs = all_obj_dirs[:n_train]

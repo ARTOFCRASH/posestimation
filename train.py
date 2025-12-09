@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from pytorchtools import EarlyStopping
 from torch.utils.tensorboard import SummaryWriter
 import timm
-from models import ResNet_CBAM, ResNet18
+from models import ResNet_CBAM, ResNet18_RGBD, ResNet18_RGB
 from tqdm import tqdm
 import torch.nn.init as init
 
@@ -131,13 +131,14 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 128
-    LR = 1e-4
+    BATCH_SIZE = 256
+    LR = 5e-5
     NUM_EPOCHS = 80
+    USE_DEPTH = True
     model_name = "ResNet18_RGBD"
-    model = ResNet18(in_channels=4, pretrained=True, out_dim=2).to(device)
+    model = ResNet18_RGBD(pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/results_npz/{current_time}"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train3/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
@@ -155,9 +156,12 @@ if __name__ == "__main__":
 
     val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
 
-
-    train_depth_transform = DepthNormalize(max_depth=160.0)
-    val_depth_transform   = DepthNormalize(max_depth=160.0)
+    if USE_DEPTH:
+        train_depth_transform = DepthNormalize(max_depth=160.0)
+        val_depth_transform   = DepthNormalize(max_depth=160.0)
+    else:
+        train_depth_transform = None
+        val_depth_transform   = None
 
     # ---------------------------- 数据集 ----------------------------
     train_list = load_file_list("train_files.txt")
@@ -167,13 +171,13 @@ if __name__ == "__main__":
         train_list,
         transform_color=train_color_transform,
         transform_depth=train_depth_transform,
-        use_depth=True
+        use_depth=USE_DEPTH
     )
     val_dataset = MyDataset(
         val_list,
         transform_color=val_color_transform,
         transform_depth=val_depth_transform,
-        use_depth=True
+        use_depth=USE_DEPTH
     )
 
     train_data_size = len(train_dataset)
@@ -185,7 +189,7 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True
     )
@@ -194,7 +198,7 @@ if __name__ == "__main__":
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True
     )
@@ -209,8 +213,9 @@ if __name__ == "__main__":
         f.write(f"Model: {model_name}\n")
         f.write(f"LR: {LR}\n")
         f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
+        f.write(f"USE_DEPTH: {USE_DEPTH}\n")
         f.write(f"NUM_EPOCHS: {NUM_EPOCHS}\n\n")
-
+        
     writer = SummaryWriter(save_dir)
     best_model_path = os.path.join(save_dir, "best.pth")
 
@@ -229,7 +234,8 @@ if __name__ == "__main__":
     best_std = None
     best_acc = None
     best_epoch = 0
-
+    
+    scaler = torch.amp.GradScaler("cuda")
     # ====================== 训练循环 ======================
     for epoch in range(NUM_EPOCHS):
         print(
@@ -241,17 +247,31 @@ if __name__ == "__main__":
         model.train()
         train_loss_epoch = 0.0
 
-        for rgb_inputs, depth_inputs, targets in tqdm(train_loader, total=len(train_loader)):
-            rgb_inputs = rgb_inputs.to(device)
-            depth_inputs = depth_inputs.to(device)
-            targets = targets.to(device)
-
-            outputs = model(rgb_inputs, depth_inputs)
-            loss = loss_fn(outputs, targets)
+        for batch in tqdm(train_loader, total=len(train_loader)):
+            if USE_DEPTH:
+                rgb_inputs, depth_inputs, targets = batch
+                rgb_inputs = rgb_inputs.to(device, non_blocking=True)
+                depth_inputs = depth_inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+            else:
+                rgb_inputs, targets = batch
+                rgb_inputs = rgb_inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                depth_inputs = None
 
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            
+            with torch.amp.autocast("cuda"):
+                if USE_DEPTH:
+                    outputs = model(rgb_inputs, depth_inputs)
+                else:
+                    outputs = model(rgb_inputs)
+                    
+                loss = loss_fn(outputs, targets)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             batch_size = rgb_inputs.size(0)
             train_loss_epoch += loss.item() * batch_size
@@ -274,12 +294,23 @@ if __name__ == "__main__":
         total_correct_angle = 0
         
         with torch.no_grad():
-            for rgb_inputs, depth_inputs, targets in val_loader:
-                rgb_inputs = rgb_inputs.to(device)
-                depth_inputs = depth_inputs.to(device)
-                targets = targets.to(device)
+            for batch in val_loader:
+                if USE_DEPTH:
+                    rgb_inputs, depth_inputs, targets = batch
+                    rgb_inputs = rgb_inputs.to(device)
+                    depth_inputs = depth_inputs.to(device)
+                    targets = targets.to(device)
+                else:
+                    rgb_inputs, targets = batch
+                    rgb_inputs = rgb_inputs.to(device)
+                    targets = targets.to(device)
+                    depth_inputs = None
 
-                outputs = model(rgb_inputs, depth_inputs)
+                if USE_DEPTH:
+                    outputs = model(rgb_inputs, depth_inputs)
+                else:
+                    outputs = model(rgb_inputs)
+                    
                 loss = loss_fn(outputs, targets)
 
                 batch_size = rgb_inputs.size(0)

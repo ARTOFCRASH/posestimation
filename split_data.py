@@ -3,7 +3,7 @@ import glob
 import random
 
 # 数据集根目录
-root_dir = r"D:\zhou-yunong\files\persimmon data\npz dataset"
+root_dir = r"/root/autodl-tmp/npz_dataset_cropped256"
 random.seed(42)
 
 
