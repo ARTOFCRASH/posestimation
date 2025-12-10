@@ -106,5 +106,5 @@ if __name__ == "__main__":
     np.random.shuffle(val_list)
 
     # 输出目录随便定一个
-    make_chunks(train_list, out_dir="/root/autodl-tmp/chunks/train", chunk_size=4096)
-    make_chunks(val_list,   out_dir="/root/autodl-tmp/chunks/val",   chunk_size=4096)
+    make_chunks(train_list, out_dir="/root/autodl-tmp/chunks/train", chunk_size=2048)
+    make_chunks(val_list,   out_dir="/root/autodl-tmp/chunks/val",   chunk_size=2048)

@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 512
+    BATCH_SIZE = 256
     LR = 2e-5
     NUM_EPOCHS = 45
     USE_DEPTH = True
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
         persistent_workers=True
     )
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
     loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=90, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
     total_train_step = 0
     total_val_step = 0
