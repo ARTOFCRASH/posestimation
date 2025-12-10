@@ -1,4 +1,4 @@
-from dataiter import MyDataset
+from chunk_dataset import Chunked_Dataset
 import os
 import numpy as np
 import random
@@ -164,17 +164,17 @@ if __name__ == "__main__":
         val_depth_transform   = None
 
     # ---------------------------- 数据集 ----------------------------
-    train_list = load_file_list("train_files.txt")
-    val_list = load_file_list("val_files.txt")
+    train_chunks_dir = "/root/autodl-tmp/chunks/train"
+    val_chunks_dir   = "/root/autodl-tmp/chunks/val"
 
-    train_dataset = MyDataset(
-        train_list,
+    train_dataset = Chunked_Dataset(
+        chunks_dir=train_chunks_dir,
         transform_color=train_color_transform,
         transform_depth=train_depth_transform,
         use_depth=USE_DEPTH
     )
-    val_dataset = MyDataset(
-        val_list,
+    val_dataset = Chunked_Dataset(
+        chunks_dir=val_chunks_dir,
         transform_color=val_color_transform,
         transform_depth=val_depth_transform,
         use_depth=USE_DEPTH
@@ -188,8 +188,8 @@ if __name__ == "__main__":
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=True,
-        num_workers=8,
+        shuffle=False,
+        num_workers=20,
         pin_memory=True,
         persistent_workers=True
     )
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=8,
+        num_workers=20,
         pin_memory=True,
         persistent_workers=True
     )
