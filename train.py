@@ -14,6 +14,7 @@ import timm
 from models import ResNet_CBAM, ResNet18_RGBD, ResNet18_RGB
 from tqdm import tqdm
 import torch.nn.init as init
+import kornia.augmentation as K
 
 
 #   设置种子
@@ -131,30 +132,28 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 256
-    LR = 5e-5
-    NUM_EPOCHS = 80
+    BATCH_SIZE = 512
+    LR = 2e-5
+    NUM_EPOCHS = 45
     USE_DEPTH = True
+    EARLY_STOP = 7
     model_name = "ResNet18_RGBD"
     model = ResNet18_RGBD(pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train3/"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train4/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
     # 目前 MyDataset 里默认是：permute + /255.0
-    train_color_transform = transforms.Compose([
-    transforms.ColorJitter(
-        brightness=0.2,   # 亮度 ±20%
-        contrast=0.2,
-        saturation=0.2,
-        hue=0.02
-    ),
-    transforms.RandomGrayscale(p=0.1),    # 偶尔变黑白
-    transforms.Normalize(imagenet_mean, imagenet_std),
-    ])
 
-    val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
+
+    kornia_train_aug = torch.nn.Sequential(
+    K.ColorJitter(0.2, 0.2, 0.2, 0.02, p=1.0),
+    K.RandomGrayscale(p=0.1),
+    K.Normalize(mean=imagenet_mean, std=imagenet_std),
+    ).to(device)
+
+    kornia_val_aug = K.Normalize(mean=imagenet_mean, std=imagenet_std).to(device)
 
     if USE_DEPTH:
         train_depth_transform = DepthNormalize(max_depth=160.0)
@@ -169,13 +168,13 @@ if __name__ == "__main__":
 
     train_dataset = Chunked_Dataset(
         chunks_dir=train_chunks_dir,
-        transform_color=train_color_transform,
+        transform_color=None,
         transform_depth=train_depth_transform,
         use_depth=USE_DEPTH
     )
     val_dataset = Chunked_Dataset(
         chunks_dir=val_chunks_dir,
-        transform_color=val_color_transform,
+        transform_color=None,
         transform_depth=val_depth_transform,
         use_depth=USE_DEPTH
     )
@@ -189,7 +188,7 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=20,
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True
     )
@@ -198,7 +197,7 @@ if __name__ == "__main__":
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=20,
+        num_workers=4,
         pin_memory=True,
         persistent_workers=True
     )
@@ -218,6 +217,12 @@ if __name__ == "__main__":
         
     writer = SummaryWriter(save_dir)
     best_model_path = os.path.join(save_dir, "best.pth")
+    early_stopping = EarlyStopping(
+        patience=EARLY_STOP,
+        verbose=True,
+        delta=0.0,
+        path=best_model_path,   # 直接存到 best.pth
+    )
 
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
     loss_fn = nn.MSELoss().to(device)
@@ -260,6 +265,8 @@ if __name__ == "__main__":
                 depth_inputs = None
 
             optimizer.zero_grad()
+            
+            rgb_inputs = kornia_train_aug(rgb_inputs)
             
             with torch.amp.autocast("cuda"):
                 if USE_DEPTH:
@@ -305,7 +312,9 @@ if __name__ == "__main__":
                     rgb_inputs = rgb_inputs.to(device)
                     targets = targets.to(device)
                     depth_inputs = None
-
+                    
+                rgb_inputs = kornia_val_aug(rgb_inputs)
+                
                 if USE_DEPTH:
                     outputs = model(rgb_inputs, depth_inputs)
                 else:
@@ -377,8 +386,12 @@ if __name__ == "__main__":
             best_acc = val_acc
             best_epoch = epoch + 1
 
-            torch.save(model.state_dict(), best_model_path)
             print(f"✅ Saved new best model at epoch {epoch + 1}, val loss={avg_val_loss:.4f}")
+
+        early_stopping(avg_val_loss, model)
+        if early_stopping.early_stop:
+            print("⏹ Early stopping triggered. Stop training.")
+            break
 
     # --------- 写最终结果到日志 ----------
     with open(log_path, "a") as f:
