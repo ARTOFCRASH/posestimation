@@ -15,6 +15,7 @@ from models import ResNet_CBAM, ResNet18_RGBD, ResNet18_RGB
 from tqdm import tqdm
 import torch.nn.init as init
 import kornia.augmentation as K
+import glob
 
 
 #   设置种子
@@ -162,17 +163,22 @@ if __name__ == "__main__":
         val_depth_transform   = None
 
     # ---------------------------- 数据集 ----------------------------
-    train_list = load_file_list("train_files.txt")
-    val_list = load_file_list("val_files.txt")
+    train_dir = "/root/autodl-tmp/dataset_split/train"
+    val_dir   = "/root/autodl-tmp/dataset_split/val"
+    
+    train_files = sorted(glob.glob(os.path.join(train_dir, "*.npz")))
+    val_files   = sorted(glob.glob(os.path.join(val_dir,   "*.npz")))
+    print(f"#train files = {len(train_files)}")
+    print(f"#val   files = {len(val_files)}")
 
     train_dataset = MyDataset(
-        train_list,
+        train_files,
         transform_color=None,
         transform_depth=train_depth_transform,
         use_depth=USE_DEPTH
     )
     val_dataset = MyDataset(
-        val_list,
+        val_files,
         transform_color=None,
         transform_depth=val_depth_transform,
         use_depth=USE_DEPTH
