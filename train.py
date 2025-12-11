@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    BATCH_SIZE = 256
+    BATCH_SIZE = 128
     LR = 5e-5
     NUM_EPOCHS = 80
     USE_DEPTH = True
@@ -187,16 +187,17 @@ if __name__ == "__main__":
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=20,
+        num_workers=10,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        prefetch_factor=4
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True,
         persistent_workers=True
     )
