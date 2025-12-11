@@ -16,7 +16,7 @@ import torch.nn.init as init
 import kornia.augmentation as K
 import glob
 from wds_loader import get_wds_loader
-
+from pt_dataloader import PtDataloader
 
 #   设置种子
 def seed_everything(seed=42):
@@ -139,6 +139,7 @@ if __name__ == "__main__":
     USE_DEPTH = True
     EARLY_STOP = 7
     model_name = "ResNet18_RGBD"
+    NUM_WORKERS = 4
     model = ResNet18_RGBD(pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
     save_dir = f"/root/autodl-tmp/project/output/{model_name}/train4/"
@@ -154,15 +155,18 @@ if __name__ == "__main__":
     ).to(device)
 
     kornia_val_aug = K.Normalize(mean=imagenet_mean, std=imagenet_std).to(device)
-
+    '''
     if USE_DEPTH:
         train_depth_transform = DepthNormalize(max_depth=160.0)
         val_depth_transform   = DepthNormalize(max_depth=160.0)
     else:
         train_depth_transform = None
         val_depth_transform   = None
-
+    '''
+    train_depth_transform = None
+    val_depth_transform   = None
     # ---------------------------- 数据集 ----------------------------
+    '''
     train_shards = "/root/autodl-tmp/wds_kaki/train-{000000..000168}.tar"
     val_shards   = "/root/autodl-tmp/wds_kaki/val-{000000..000042}.tar"
 
@@ -173,9 +177,9 @@ if __name__ == "__main__":
     train_loader = get_wds_loader(
         train_shards,
         batch_size=BATCH_SIZE,
-        num_workers=1,
+        num_workers=2,
         shuffle=True,
-        buffer_size=1000,
+        buffer_size=200,
         use_depth=USE_DEPTH,
     )
 
@@ -187,7 +191,32 @@ if __name__ == "__main__":
         buffer_size=0,
         use_depth=USE_DEPTH,
     )
+    '''
 
+
+    train_txt = "pt_train_files.txt"
+    val_txt   = "pt_val_files.txt"
+    
+    train_dataset = PtDataloader(train_txt, use_depth=USE_DEPTH)
+    val_dataset   = PtDataloader(val_txt,   use_depth=USE_DEPTH)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+    )
     # ---------------------------- 日志 & 保存目录 ----------------------------
     os.makedirs(save_dir, exist_ok=True)
 
@@ -241,7 +270,7 @@ if __name__ == "__main__":
         train_samples = 0
 
         # WebDataset 没有固定长度，这里不指定 total
-        for batch in tqdm(train_loader):
+        for batch in tqdm(train_loader, total=len(train_loader)):
             if USE_DEPTH:
                 rgb_inputs, depth_inputs, targets = batch
                 rgb_inputs = rgb_inputs.to(device, non_blocking=True)
