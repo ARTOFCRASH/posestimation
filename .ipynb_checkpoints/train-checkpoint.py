@@ -1,4 +1,3 @@
-from dataiter import MyDataset
 import os
 import numpy as np
 import random
@@ -16,6 +15,7 @@ from tqdm import tqdm
 import torch.nn.init as init
 import kornia.augmentation as K
 import glob
+from wds_loader import get_wds_loader
 
 
 #   设置种子
@@ -163,48 +163,29 @@ if __name__ == "__main__":
         val_depth_transform   = None
 
     # ---------------------------- 数据集 ----------------------------
-    train_dir = "/root/autodl-tmp/dataset_split/train"
-    val_dir   = "/root/autodl-tmp/dataset_split/val"
-    
-    train_files = sorted(glob.glob(os.path.join(train_dir, "*.npz")))
-    val_files   = sorted(glob.glob(os.path.join(val_dir,   "*.npz")))
-    print(f"#train files = {len(train_files)}")
-    print(f"#val   files = {len(val_files)}")
+    train_shards = "/root/autodl-tmp/wds_kaki/train-{000000..000168}.tar"
+    val_shards   = "/root/autodl-tmp/wds_kaki/val-{000000..000042}.tar"
 
-    train_dataset = MyDataset(
-        train_files,
-        transform_color=None,
-        transform_depth=train_depth_transform,
-        use_depth=USE_DEPTH
-    )
-    val_dataset = MyDataset(
-        val_files,
-        transform_color=None,
-        transform_depth=val_depth_transform,
-        use_depth=USE_DEPTH
-    )
+    print(f"Using WebDataset shards:")
+    print(f"  train: {train_shards}")
+    print(f"  val:   {val_shards}")
 
-    train_data_size = len(train_dataset)
-    val_data_size = len(val_dataset)
-    print(f"train dataset size: {train_data_size}")
-    print(f"val dataset size:   {val_data_size}")
-
-    train_loader = DataLoader(
-        train_dataset,
+    train_loader = get_wds_loader(
+        train_shards,
         batch_size=BATCH_SIZE,
+        num_workers=1,
         shuffle=True,
-        num_workers=20,
-        pin_memory=True,
-        persistent_workers=True
+        buffer_size=1000,
+        use_depth=USE_DEPTH,
     )
 
-    val_loader = DataLoader(
-        val_dataset,
+    val_loader = get_wds_loader(
+        val_shards,
         batch_size=BATCH_SIZE,
-        shuffle=False,
         num_workers=4,
-        pin_memory=True,
-        persistent_workers=True
+        shuffle=False,     # 验证集不需要 shuffle
+        buffer_size=0,
+        use_depth=USE_DEPTH,
     )
 
     # ---------------------------- 日志 & 保存目录 ----------------------------
@@ -257,12 +238,17 @@ if __name__ == "__main__":
         # -------------------- Train --------------------
         model.train()
         train_loss_epoch = 0.0
+        train_samples = 0
 
-        for batch in tqdm(train_loader, total=len(train_loader)):
+        # WebDataset 没有固定长度，这里不指定 total
+        for batch in tqdm(train_loader):
             if USE_DEPTH:
                 rgb_inputs, depth_inputs, targets = batch
                 rgb_inputs = rgb_inputs.to(device, non_blocking=True)
                 depth_inputs = depth_inputs.to(device, non_blocking=True)
+                # 在这里做 depth 归一化（原来是在 Dataset 里做的）
+                if train_depth_transform is not None:
+                    depth_inputs = train_depth_transform(depth_inputs)
                 targets = targets.to(device, non_blocking=True)
             else:
                 rgb_inputs, targets = batch
@@ -287,23 +273,23 @@ if __name__ == "__main__":
 
             batch_size = rgb_inputs.size(0)
             train_loss_epoch += loss.item() * batch_size
+            train_samples += batch_size
 
             total_train_step += 1
             if total_train_step % 100 == 0:
                 writer.add_scalar("Train/Loss", loss.item(), global_step=total_train_step)
 
-        avg_train_loss = train_loss_epoch / train_data_size
+        avg_train_loss = train_loss_epoch / max(1, train_samples)
         scheduler.step()
 
         # -------------------- Validation --------------------
-        model.eval()
         val_loss_epoch = 0.0
-        total_val_accuracy = 0.0
         total_roll_diff = 0.0
         total_pitch_diff = 0.0
         sum_squared_angle_error = 0.0
         all_angle_errors = []
         total_correct_angle = 0
+        val_samples = 0
         
         with torch.no_grad():
             for batch in val_loader:
@@ -311,6 +297,8 @@ if __name__ == "__main__":
                     rgb_inputs, depth_inputs, targets = batch
                     rgb_inputs = rgb_inputs.to(device)
                     depth_inputs = depth_inputs.to(device)
+                    if val_depth_transform is not None:
+                        depth_inputs = val_depth_transform(depth_inputs)
                     targets = targets.to(device)
                 else:
                     rgb_inputs, targets = batch
@@ -329,10 +317,7 @@ if __name__ == "__main__":
 
                 batch_size = rgb_inputs.size(0)
                 val_loss_epoch += loss.item() * batch_size
-
-                # diff = torch.abs(outputs - targets)  # [N, 2]
-                # 误差小于3°视为准确
-                # total_val_accuracy += torch.sum((diff[:, 0] <= 3) & (diff[:, 1] <= 3)).item()
+                val_samples += batch_size
 
                 # MAE (roll/pitch)
                 roll_diff = torch.abs(outputs[:, 0] - targets[:, 0])
@@ -352,12 +337,12 @@ if __name__ == "__main__":
                     if angle_error <= 3.0:
                         total_correct_angle += 1
 
-        avg_val_loss = val_loss_epoch / val_data_size
-        avg_roll_diff = total_roll_diff / val_data_size
-        avg_pitch_diff = total_pitch_diff / val_data_size
-        # val_acc = total_val_accuracy / val_data_size
-        val_acc = total_correct_angle / val_data_size
-        rmse_angle = np.sqrt(sum_squared_angle_error / val_data_size)
+        val_samples = max(1, val_samples)
+        avg_val_loss = val_loss_epoch / val_samples
+        avg_roll_diff = total_roll_diff / val_samples
+        avg_pitch_diff = total_pitch_diff / val_samples
+        val_acc = total_correct_angle / val_samples
+        rmse_angle = np.sqrt(sum_squared_angle_error / val_samples)
         std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
 
         total_val_step += 1
