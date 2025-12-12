@@ -18,6 +18,7 @@ import glob
 from wds_loader import get_wds_loader
 from pt_dataloader import PtDataloader
 
+
 #   设置种子
 def seed_everything(seed=42):
     torch.manual_seed(seed)
@@ -135,26 +136,41 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE = 256
     LR = 5e-5
+    LR_DECAY = "0.1 every 20 epochs"
     NUM_EPOCHS = 80
-    USE_DEPTH = True
+    USE_DEPTH = False
     EARLY_STOP = 7
-    model_name = "ResNet18_RGBD"
-    NUM_WORKERS = 4
-    model = ResNet18_RGBD(pretrained=True, out_dim=2).to(device)
+    model_name = "ResNet18_RGB"
+    NUM_WORKERS = 8
+    model = ResNet18_RGB(pretrained=True, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train4/"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train2/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
     # 目前 MyDataset 里默认是：permute + /255.0
 
+    # ---------------------------- 数据增强 ----------------------------
+    train_color_transform = transforms.Compose([
+    transforms.RandomApply([
+    transforms.ColorJitter(0.2, 0.2, 0.2, 0.02),
+    transforms.RandomGrayscale(p=0.1)], 
+    p=0.3),    # 只增强30%的样本
+    transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
+    ])
+
+    val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
+
+    '''    
     kornia_train_aug = torch.nn.Sequential(
-    K.ColorJitter(0.2, 0.2, 0.2, 0.02, p=1.0),
-    K.RandomGrayscale(p=0.1),
+    # K.ColorJitter(0.2, 0.2, 0.2, 0.02, p=1.0),
+    # K.RandomGrayscale(p=0.1),
     K.Normalize(mean=imagenet_mean, std=imagenet_std),
     ).to(device)
-
+    kornia_train_aug = None
     kornia_val_aug = K.Normalize(mean=imagenet_mean, std=imagenet_std).to(device)
+    '''
+
     '''
     if USE_DEPTH:
         train_depth_transform = DepthNormalize(max_depth=160.0)
@@ -163,7 +179,7 @@ if __name__ == "__main__":
         train_depth_transform = None
         val_depth_transform   = None
     '''
-    train_depth_transform = None
+    train_depth_transform = None    # pt数据集里的 depth 已经是 normalized
     val_depth_transform   = None
     # ---------------------------- 数据集 ----------------------------
     '''
@@ -197,8 +213,8 @@ if __name__ == "__main__":
     train_txt = "pt_train_files.txt"
     val_txt   = "pt_val_files.txt"
     
-    train_dataset = PtDataloader(train_txt, use_depth=USE_DEPTH)
-    val_dataset   = PtDataloader(val_txt,   use_depth=USE_DEPTH)
+    train_dataset = PtDataloader(train_txt, use_depth=USE_DEPTH, color_transform=train_color_transform)
+    val_dataset   = PtDataloader(val_txt, use_depth=USE_DEPTH, color_transform=val_color_transform)
     
     train_loader = DataLoader(
         train_dataset,
@@ -216,6 +232,8 @@ if __name__ == "__main__":
         shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True
     )
     # ---------------------------- 日志 & 保存目录 ----------------------------
     os.makedirs(save_dir, exist_ok=True)
@@ -226,6 +244,7 @@ if __name__ == "__main__":
         f.write(f"Time: {current_time}\n")
         f.write(f"Model: {model_name}\n")
         f.write(f"LR: {LR}\n")
+        f.write(f"LR_DECAY: {LR_DECAY}\n")
         f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
         f.write(f"USE_DEPTH: {USE_DEPTH}\n")
         f.write(f"EARLY_STOP: {EARLY_STOP}\n")
@@ -243,7 +262,7 @@ if __name__ == "__main__":
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
     loss_fn = nn.MSELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=90, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
     total_train_step = 0
     total_val_step = 0
@@ -275,18 +294,13 @@ if __name__ == "__main__":
                 rgb_inputs, depth_inputs, targets = batch
                 rgb_inputs = rgb_inputs.to(device, non_blocking=True)
                 depth_inputs = depth_inputs.to(device, non_blocking=True)
-                # 在这里做 depth 归一化（原来是在 Dataset 里做的）
-                if train_depth_transform is not None:
-                    depth_inputs = train_depth_transform(depth_inputs)
                 targets = targets.to(device, non_blocking=True)
             else:
                 rgb_inputs, targets = batch
                 rgb_inputs = rgb_inputs.to(device, non_blocking=True)
                 targets = targets.to(device, non_blocking=True)
-                depth_inputs = None
 
             optimizer.zero_grad()
-            rgb_inputs = kornia_train_aug(rgb_inputs)
             
             with torch.amp.autocast("cuda"):
                 if USE_DEPTH:
@@ -312,6 +326,7 @@ if __name__ == "__main__":
         scheduler.step()
 
         # -------------------- Validation --------------------
+        model.eval()
         val_loss_epoch = 0.0
         total_roll_diff = 0.0
         total_pitch_diff = 0.0
@@ -326,23 +341,15 @@ if __name__ == "__main__":
                     rgb_inputs, depth_inputs, targets = batch
                     rgb_inputs = rgb_inputs.to(device)
                     depth_inputs = depth_inputs.to(device)
-                    if val_depth_transform is not None:
-                        depth_inputs = val_depth_transform(depth_inputs)
                     targets = targets.to(device)
                 else:
                     rgb_inputs, targets = batch
                     rgb_inputs = rgb_inputs.to(device)
                     targets = targets.to(device)
-                    depth_inputs = None
                     
-                rgb_inputs = kornia_val_aug(rgb_inputs)
-                
-                if USE_DEPTH:
-                    outputs = model(rgb_inputs, depth_inputs)
-                else:
-                    outputs = model(rgb_inputs)
-                    
-                loss = loss_fn(outputs, targets)
+                with torch.amp.autocast("cuda"):
+                    outputs = model(rgb_inputs, depth_inputs) if USE_DEPTH else model(rgb_inputs)
+                    loss = loss_fn(outputs, targets)
 
                 batch_size = rgb_inputs.size(0)
                 val_loss_epoch += loss.item() * batch_size
