@@ -8,9 +8,6 @@ SRC_ROOT = "/root/autodl-tmp/npz_dataset_cropped256"
 DST_ROOT = "/root/autodl-tmp/pt_dataset"
 os.makedirs(DST_ROOT, exist_ok=True)
 
-MAX_DEPTH = 160.0  # 和你原来的 DepthNormalize 一致
-
-
 def convert_one_folder(npz_dir, pt_dir):
     os.makedirs(pt_dir, exist_ok=True)
     npz_files = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
@@ -28,8 +25,9 @@ def convert_one_folder(npz_dir, pt_dir):
         color = torch.from_numpy(color_np).permute(2, 0, 1).float().div_(255.0).half()
 
 
-        # depth: HW uint16 -> [1,H,W] float32 [0,1] (按 MAX_DEPTH 归一化)
-        depth = torch.from_numpy(depth_np).unsqueeze(0).float().div_(MAX_DEPTH).clamp_(0,1).half()
+        # depth: HW uint16 -> [1,H,W] float32 [0,1]
+        depth = torch.from_numpy(depth_np).unsqueeze(0).float().half()
+
 
         # label: float32 [2]
         label = torch.from_numpy(label_np).float()

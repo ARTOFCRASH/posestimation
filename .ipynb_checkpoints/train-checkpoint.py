@@ -107,13 +107,13 @@ def directional_acc(roll_predicted, pitch_predicted, roll_label, pitch_label):
     label = rotate_result(roll_label, pitch_label)
     return count_angle(pre, label)
 
-
+'''
 class DepthNormalize(object):
-    '''
+
     valid depth min over dataset: 73
     valid depth max over dataset: 149
     mean depth range: 80.346625  ~  123.958125
-    '''
+
     def __init__(self, max_depth=160.0):
         self.max_depth = max_depth
 
@@ -122,6 +122,9 @@ class DepthNormalize(object):
         depth = depth / self.max_depth
         depth = torch.clamp(depth, 0.0, 1.0)
         return depth
+'''
+
+
 
 
 # ====================== 读 txt 文件列表 ======================
@@ -138,13 +141,14 @@ if __name__ == "__main__":
     LR = 5e-5
     LR_DECAY = "0.1 every 20 epochs"
     NUM_EPOCHS = 80
-    USE_DEPTH = False
+    USE_DEPTH = True
     EARLY_STOP = 7
-    model_name = "ResNet18_RGB"
+    model_name = "ResNet18_RGBD"
+    PRE_TRAINED = True
     NUM_WORKERS = 8
-    model = ResNet18_RGB(pretrained=True, out_dim=2).to(device)
+    model = ResNet18_RGBD(pretrained=PRE_TRAINED, out_dim=2).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train2/"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train6/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
@@ -154,7 +158,8 @@ if __name__ == "__main__":
     train_color_transform = transforms.Compose([
     transforms.RandomApply([
     transforms.ColorJitter(0.2, 0.2, 0.2, 0.02),
-    transforms.RandomGrayscale(p=0.1)], 
+    transforms.RandomGrayscale(p=0.1),
+    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], 
     p=0.3),    # 只增强30%的样本
     transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
     ])
@@ -179,8 +184,96 @@ if __name__ == "__main__":
         train_depth_transform = None
         val_depth_transform   = None
     '''
-    train_depth_transform = None    # pt数据集里的 depth 已经是 normalized
-    val_depth_transform   = None
+    class DepthRandomize(object):
+        def __init__(self, drop_prob=0.05, noise_std=2.0):
+            """
+            drop_prob: 随机孔洞概率
+            noise_std: 高斯噪声标准差（单位 = 原始深度单位，如 mm）
+            """
+            self.drop_prob = drop_prob
+            self.noise_std = noise_std
+    
+        def __call__(self, depth: torch.Tensor):
+            # depth: [1,H,W], raw depth (e.g., mm), background = 0
+    
+            d = depth.clone()
+            valid = d > 0
+    
+            if valid.any():
+                # 随机孔洞
+                drop = (torch.rand_like(d) < self.drop_prob) & valid
+                d[drop] = 0.0
+    
+                # 高斯噪声
+                noise = torch.randn_like(d) * float(self.noise_std)
+                d[valid] = d[valid] + noise[valid]
+    
+                # 防止负深度
+                d[valid] = torch.clamp(d[valid], min=0.0)
+    
+            return d
+
+
+
+    
+    class DepthNormalize(object):
+        """
+        per-image foreground standardization:
+          D' = (D - mu_fg) / sigma_fg
+        where mu_fg is median/mean on foreground pixels (depth>0),
+        sigma_fg is MAD-based (robust) or std.
+        Background stays 0.
+        """
+        def __init__(self, use_median=True, use_mad=True, clip=3.0, eps=1e-6):
+            self.use_median = use_median   # True: median, False: mean
+            self.use_mad = use_mad         # True: MAD, False: std
+            self.clip = clip               # None or float
+            self.eps = eps
+    
+        def __call__(self, depth: torch.Tensor):
+            # depth: [1,H,W] float
+            if depth.ndim != 3 or depth.size(0) != 1:
+                raise ValueError(f"Depth must be [1,H,W], got {tuple(depth.shape)}")
+    
+            d = depth[0]
+            mask = d > 0
+    
+            # no foreground -> return all zeros (or keep as is)
+            if not mask.any():
+                return torch.zeros_like(depth)
+    
+            vals = d[mask]
+    
+            # mu_fg
+            mu = vals.median() if self.use_median else vals.mean()
+    
+            # sigma_fg
+            if self.use_mad:
+                mad = (vals - mu).abs().median()
+                sigma = 1.4826 * mad  # robust std estimate
+            else:
+                sigma = vals.std(unbiased=False)
+    
+            sigma = torch.clamp(sigma, min=self.eps)
+    
+            out = depth.clone()
+            out0 = out[0]
+            out0[mask] = (out0[mask] - mu) / sigma
+            out0[~mask] = 0.0
+    
+            if self.clip is not None:
+                out = torch.clamp(out, -float(self.clip), float(self.clip))
+    
+            return out
+
+
+    # pt数据集里的 depth是原始深度
+    train_depth_transform = transforms.Compose([
+        transforms.RandomApply([DepthRandomize(drop_prob=0.05, noise_std=2.0)], p=0.3),
+        DepthNormalize(use_median=True, use_mad=True, clip=3.0)
+        ])
+    
+    val_depth_transform = DepthNormalize(use_median=True, use_mad=True, clip=3.0)
     # ---------------------------- 数据集 ----------------------------
     '''
     train_shards = "/root/autodl-tmp/wds_kaki/train-{000000..000168}.tar"
@@ -213,8 +306,8 @@ if __name__ == "__main__":
     train_txt = "pt_train_files.txt"
     val_txt   = "pt_val_files.txt"
     
-    train_dataset = PtDataloader(train_txt, use_depth=USE_DEPTH, color_transform=train_color_transform)
-    val_dataset   = PtDataloader(val_txt, use_depth=USE_DEPTH, color_transform=val_color_transform)
+    train_dataset = PtDataloader(train_txt, use_depth=USE_DEPTH, color_transform=train_color_transform, depth_transform=train_depth_transform)
+    val_dataset   = PtDataloader(val_txt, use_depth=USE_DEPTH, color_transform=val_color_transform, depth_transform=val_depth_transform)
     
     train_loader = DataLoader(
         train_dataset,
@@ -243,6 +336,7 @@ if __name__ == "__main__":
         f.write(f"=== Training Log ===\n")
         f.write(f"Time: {current_time}\n")
         f.write(f"Model: {model_name}\n")
+        f.write(f"Pre-trained: {PRE_TRAINED}\n")
         f.write(f"LR: {LR}\n")
         f.write(f"LR_DECAY: {LR_DECAY}\n")
         f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
