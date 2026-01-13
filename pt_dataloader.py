@@ -5,13 +5,21 @@ from torch.utils.data import Dataset
 
 
 class PtDataloader(Dataset):
-    def __init__(self, txt_file, use_depth=True, color_transform=None, depth_transform=None):
+    def __init__(self, src, use_depth=True, color_transform=None, depth_transform=None):
         """
         txt_file: 每行一个 .pt 文件路径
         use_depth: 是否读取 depth 通道
         """
-        with open(txt_file, "r") as f:
-            self.files = [line.strip() for line in f if line.strip()]
+        if src.endswith(".txt"):
+            with open(src, "r") as f:
+                self.files = [line.strip() for line in f if line.strip()]
+        else:
+            self.files = sorted(
+                glob.glob(os.path.join(src, "**", "*.pt"), recursive=True)
+            )
+            
+        if len(self.files) == 0:
+            raise RuntimeError(f"No .pt files found in {src}")
 
         self.use_depth = use_depth
         self.color_transform = color_transform
