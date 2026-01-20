@@ -130,6 +130,26 @@ class DepthNormalize(object):
         return out
 
 
+class DepthOffset(object):
+    def __init__(self, offset=100.0, clamp_min=0.0):
+        self.offset = float(offset)
+        self.clamp_min = clamp_min
+
+    def __call__(self, depth: torch.Tensor):
+        # depth: [1,H,W]
+        if depth.ndim != 3 or depth.size(0) != 1:
+            raise ValueError(f"Depth must be [1,H,W], got {tuple(depth.shape)}")
+
+        d = depth.clone()
+        valid = d > 0
+        if valid.any():
+            d[valid] = d[valid] - self.offset
+            if self.clamp_min is not None:
+                d[valid] = torch.clamp(d[valid], min=float(self.clamp_min))
+        return d
+
+
+
 def evaluate(model, loader, device, use_depth=True):
     loss_fn = nn.MSELoss().to(device)
 
@@ -175,7 +195,7 @@ def evaluate(model, loader, device, use_depth=True):
                 angle_error = directional_acc(rp, pp, rt, pt)
                 sum_squared_angle_error += angle_error ** 2
                 all_angle_errors.append(angle_error)
-                if angle_error <= 3.0:
+                if angle_error <= 10.0:
                     total_correct_angle += 1
 
     val_samples = max(1, val_samples)
@@ -190,7 +210,7 @@ def evaluate(model, loader, device, use_depth=True):
         "val_loss": avg_val_loss,
         "roll_mae": avg_roll_diff,
         "pitch_mae": avg_pitch_diff,
-        "dir_acc<= 3 deg": val_acc,
+        "dir_acc<= 10 deg": val_acc,
         "dir_rmse": rmse_angle,
         "dir_std": std_dev,
         "n_samples": val_samples
@@ -204,8 +224,8 @@ def main():
     BATCH_SIZE = 256
     NUM_WORKERS = 8
 
-    best_model_path = "/root/autodl-tmp/project/output/ResNet18_RGBD/train6/best.pth"
-    val_txt = "pt_val_files.txt"  # 你的验证集列表
+    best_model_path = r"/root/autodl-tmp/project/output/ResNet18_RGBD/train7/best.pth"
+    val_root = r"pt_val_files.txt"
     # ======================================
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -216,13 +236,15 @@ def main():
     val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
 
     if USE_DEPTH:
-        val_depth_transform = DepthNormalize(use_median=True, use_mad=True, clip=3.0)
+        val_depth_transform = transforms.Compose([
+            DepthNormalize(use_median=True, use_mad=True, clip=3.0)
+        ])
     else:
         val_depth_transform = None
 
     # ------- dataset / loader -------
     val_dataset = PtDataloader(
-        val_txt,
+        val_root,
         use_depth=USE_DEPTH,
         color_transform=val_color_transform,
         depth_transform=val_depth_transform
