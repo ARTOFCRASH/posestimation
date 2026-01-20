@@ -195,7 +195,7 @@ def evaluate(model, loader, device, use_depth=True):
                 angle_error = directional_acc(rp, pp, rt, pt)
                 sum_squared_angle_error += angle_error ** 2
                 all_angle_errors.append(angle_error)
-                if angle_error <= 15.0:
+                if angle_error <= 10.0:
                     total_correct_angle += 1
 
     val_samples = max(1, val_samples)
@@ -210,7 +210,7 @@ def evaluate(model, loader, device, use_depth=True):
         "val_loss": avg_val_loss,
         "roll_mae": avg_roll_diff,
         "pitch_mae": avg_pitch_diff,
-        "dir_acc<= 15 deg": val_acc,
+        "dir_acc<= 10 deg": val_acc,
         "dir_rmse": rmse_angle,
         "dir_std": std_dev,
         "n_samples": val_samples
@@ -224,8 +224,8 @@ def main():
     BATCH_SIZE = 256
     NUM_WORKERS = 8
 
-    best_model_path = r"D:\zhou-yunong\files\python project\output\ResNet18_RGBD\train6\best.pth"
-    val_root = r"D:\zhou-yunong\files\persimmon data\RealSenseD405_raw\cropped256_pt"
+    best_model_path = r"D:\files\projects\output\ResNet18_RGBD\train7\best.pth"
+    val_root = r"D:\files\persimmon data\RealSenseD405_raw\final_pt"
     # ======================================
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -237,7 +237,6 @@ def main():
 
     if USE_DEPTH:
         val_depth_transform = transforms.Compose([
-            DepthOffset(offset=100.0, clamp_min=0.0),   # 只对有效深度减100
             DepthNormalize(use_median=True, use_mad=True, clip=3.0)
         ])
     else:
