@@ -2,6 +2,69 @@ import os
 import glob
 import torch
 from torch.utils.data import Dataset
+import numpy as np
+
+
+def rot_mat(point, vector, t):
+    """
+    生成一个绕任意轴旋转的 4x4 旋转矩阵。
+
+    Params:
+    - point: 旋转轴经过的点，4维numpy数组，例如 [a, b, c, 1]
+    - vector: 旋转轴的方向向量，单位向量，4维numpy数组，例如 [u, v, w, 0]
+    - t: 旋转角度，单位为弧度
+
+    返回:
+    - 4x4 transformation matrix
+    """
+    u, v, w, _ = vector
+    a, b, c, _ = point
+    cos_t = np.cos(t)
+    sin_t = np.sin(t)
+    one_minus_cos_t = 1 - cos_t
+
+    matrix = np.array([
+        [
+            u * u + (v * v + w * w) * cos_t,
+            u * v * one_minus_cos_t - w * sin_t,
+            u * w * one_minus_cos_t + v * sin_t,
+            (a * (v * v + w * w) - u * (b * v + c * w)) * one_minus_cos_t + (b * w - c * v) * sin_t
+        ],
+        [
+            u * v * one_minus_cos_t + w * sin_t,
+            v * v + (u * u + w * w) * cos_t,
+            v * w * one_minus_cos_t - u * sin_t,
+            (b * (u * u + w * w) - v * (a * u + c * w)) * one_minus_cos_t + (c * u - a * w) * sin_t
+        ],
+        [
+            u * w * one_minus_cos_t - v * sin_t,
+            v * w * one_minus_cos_t + u * sin_t,
+            w * w + (u * u + v * v) * cos_t,
+            (c * (u * u + v * v) - w * (a * u + b * v)) * one_minus_cos_t + (a * v - b * u) * sin_t
+        ],
+        [0, 0, 0, 1]
+    ])
+
+    return matrix
+
+
+def orientation_from_roll_pitch(roll, pitch):
+    origin = np.array([0, 0, 0, 1], dtype=np.float32)
+    x_axis = np.array([1, 0, 0, 0], dtype=np.float32)
+    y_axis = np.array([0, 1, 0, 0], dtype=np.float32)
+    z_axis = np.array([0, 0, 1, 0], dtype=np.float32)
+    rollval = np.radians(roll)
+    pitchval = np.radians(pitch)
+    roll_mat = rot_mat(origin, y_axis, rollval)
+    new_z_axis = roll_mat @ z_axis
+    x_axis = roll_mat @ x_axis
+    pitch_mat = rot_mat(origin, x_axis, pitchval)
+    orientation = pitch_mat @ new_z_axis
+
+    v = orientation[:3]
+    v = v / np.linalg.norm(v)
+
+    return v 
 
 
 class PtDataloader(Dataset):
@@ -39,10 +102,17 @@ class PtDataloader(Dataset):
 
         label = data["label"].to(torch.float32)   # [2]
         
+        label = label.view(-1)
+        roll = float(label[0].item())
+        pitch = float(label[1].item())
+        v_np = orientation_from_roll_pitch(roll, pitch)
+        v = torch.from_numpy(v_np).to(torch.float32)
+
+
         if self.use_depth:
             depth = data["depth"].to(torch.float32) # float16/float32, [1,H,W]
             if self.depth_transform is not None:
                 depth = self.depth_transform(depth)
-            return color, depth, label
+            return color, depth, v
         else:
-            return color, label
+            return color, v

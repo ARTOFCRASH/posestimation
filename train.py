@@ -6,6 +6,7 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 import time
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from pytorchtools import EarlyStopping
 from torch.utils.tensorboard import SummaryWriter
@@ -15,7 +16,6 @@ from tqdm import tqdm
 import torch.nn.init as init
 import kornia.augmentation as K
 import glob
-from wds_loader import get_wds_loader
 from pt_dataloader import PtDataloader
 
 
@@ -31,82 +31,13 @@ def seed_everything(seed=42):
 seed_everything()
 
 
-def rot_mat(point, vector, t):
-    """
-    生成一个绕任意轴旋转的 4x4 旋转矩阵。
-
-    Params:
-    - point: 旋转轴经过的点，4维numpy数组，例如 [a, b, c, 1]
-    - vector: 旋转轴的方向向量，单位向量，4维numpy数组，例如 [u, v, w, 0]
-    - t: 旋转角度，单位为弧度
-
-    返回:
-    - 4x4 transformation matrix
-    """
-    u, v, w, _ = vector
-    a, b, c, _ = point
-    cos_t = np.cos(t)
-    sin_t = np.sin(t)
-    one_minus_cos_t = 1 - cos_t
-
-    matrix = np.array([
-        [
-            u * u + (v * v + w * w) * cos_t,
-            u * v * one_minus_cos_t - w * sin_t,
-            u * w * one_minus_cos_t + v * sin_t,
-            (a * (v * v + w * w) - u * (b * v + c * w)) * one_minus_cos_t + (b * w - c * v) * sin_t
-        ],
-        [
-            u * v * one_minus_cos_t + w * sin_t,
-            v * v + (u * u + w * w) * cos_t,
-            v * w * one_minus_cos_t - u * sin_t,
-            (b * (u * u + w * w) - v * (a * u + c * w)) * one_minus_cos_t + (c * u - a * w) * sin_t
-        ],
-        [
-            u * w * one_minus_cos_t - v * sin_t,
-            v * w * one_minus_cos_t + u * sin_t,
-            w * w + (u * u + v * v) * cos_t,
-            (c * (u * u + v * v) - w * (a * u + b * v)) * one_minus_cos_t + (a * v - b * u) * sin_t
-        ],
-        [0, 0, 0, 1]
-    ])
-
-    return matrix
-
-
-def count_angle(vector1, vector2):
-    vector1 = vector1[:3]
-    vector2 = vector2[:3]
-    dot_product = np.dot(vector1, vector2)
-    norm_a = np.linalg.norm(vector1)
-    norm_b = np.linalg.norm(vector2)
-    cos_theta = dot_product / (norm_a * norm_b)
-    theta = np.arccos(cos_theta)
-    angle_in_degrees = np.degrees(theta)
-
-    return angle_in_degrees
-
-
-def rotate_result(roll, pitch):
-    origin = np.array([0, 0, 0, 1])
-    x_axis = np.array([1, 0, 0, 0])  # 世界 x 方向
-    y_axis = np.array([0, 1, 0, 0])  # 世界 y 方向
-    z_axis = np.array([0, 0, 1, 0])  # 世界 z 方向
-    rollval = np.radians(roll)
-    pitchval = np.radians(pitch)
-    roll_mat = rot_mat(origin, y_axis, rollval)
-    result1 = roll_mat @ z_axis
-    x_axis = roll_mat @ x_axis
-    pitch_mat = rot_mat(origin, x_axis, pitchval)
-    result2 = pitch_mat @ result1
-    return result2
-
-
-def directional_acc(roll_predicted, pitch_predicted, roll_label, pitch_label):
-    pre = rotate_result(roll_predicted, pitch_predicted)
-    label = rotate_result(roll_label, pitch_label)
-    return count_angle(pre, label)
-
+def angle_error_deg(pred, gt, eps=1e-8):
+    # pred, gt: torch.Tensor, shape (B,3)
+    pred = F.normalize(pred, dim=1, eps=eps)
+    gt   = F.normalize(gt, dim=1, eps=eps)
+    cos = (pred * gt).sum(dim=1).clamp(-1.0, 1.0)  # (B,)
+    ang = torch.acos(cos) * (180.0 / torch.pi)        # (B,)
+    return ang
 '''
 class DepthNormalize(object):
 
@@ -146,26 +77,62 @@ if __name__ == "__main__":
     model_name = "ResNet18_RGBD"
     PRE_TRAINED = True
     NUM_WORKERS = 8
-    model = ResNet18_RGBD(pretrained=PRE_TRAINED, out_dim=2).to(device)
+    model = ResNet18_RGBD(pretrained=PRE_TRAINED, out_dim=3).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train6/"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train7/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
     # 目前 MyDataset 里默认是：permute + /255.0
+    
 
     # ---------------------------- 数据增强 ----------------------------
+    class BackgroundRandomizer:
+        """针对合成数据黑背景的增强：将像素值为0的区域随机填充噪声或颜色"""
+        def __init__(self, p=0.5):
+            self.p = p
+    
+        def __call__(self, img): # img: [3, H, W] tensor
+            if random.random() > self.p:
+                return img
+            # 找到黑色背景掩码 (假设合成数据背景为全黑)
+            mask = (img.sum(dim=0, keepdim=True) < 0.01) # (Output) tensor(bool) [1, H, W]
+            # 生成随机环境色或噪声
+            noise = torch.rand_like(img) * 0.5 
+            # 仅替换背景部分
+            img = torch.where(mask, noise, img)
+            return img
+
+
     train_color_transform = transforms.Compose([
+    # 随机平移 (Translation)
+    # degrees=0 不旋转
+    # translate=(0.1, 0.1) 表示在宽和高方向最多平移 10% 的像素偏移
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+
+    # 随机裁剪并缩放 (Random Resized Crop)
+    # 模拟相机与柿子之间距离的变化（Scale）以及位置的不确定性
+    # scale=(0.8, 1.0) 表示采样面积为原图的 80%~100%
+    transforms.RandomResizedCrop(size=(256, 256), scale=(0.8, 1.0), ratio=(0.95, 1.05)),
+
+    # 极强的颜色与光照抖动 (Color Jittering)
     transforms.RandomApply([
-    transforms.ColorJitter(0.2, 0.2, 0.2, 0.02),
-    transforms.RandomGrayscale(p=0.1),
-    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], 
-    p=0.3),    # 只增强30%的样本
+        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.4, hue=0.1)
+    ], p=0.8),
+
+    # 模拟真实相机的噪声与模糊
+    transforms.RandomApply([
+        transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))
+    ], p=0.4),
+    
+    #背景随机化处理
+    BackgroundRandomizer(p=0.7),
+        
     transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
     ])
 
     val_color_transform = transforms.Normalize(mean=imagenet_mean, std=imagenet_std)
-
+    
     '''    
     kornia_train_aug = torch.nn.Sequential(
     # K.ColorJitter(0.2, 0.2, 0.2, 0.02, p=1.0),
@@ -213,9 +180,32 @@ if __name__ == "__main__":
     
             return d
 
-
-
     
+    class DepthBreakdown:
+        """模拟 D405 真实相机的边缘破碎和内部空洞"""
+        def __init__(self, p=0.5):
+            self.p = p
+
+        def __call__(self, depth): # depth: [1, H, W] tensor
+            if random.random() > self.p:
+                return depth
+            d = depth.clone()
+            # 1. 随机边缘侵蚀 (模拟 batch26 中的破碎边缘)
+            mask = (d > 0).float()
+            kernel_size = random.choice([3, 5])
+            # 使用 MaxPool 模拟侵蚀效果
+            eroded = -F.max_pool2d(-mask.unsqueeze(0), kernel_size=kernel_size, stride=1, padding=kernel_size//2)
+            d[eroded.squeeze(0) == 0] = 0
+            
+            # 2. 随机内部空洞 (模拟材质吸光导致的缺失)
+            for _ in range(random.randint(1, 3)):
+                h, w = d.shape[1], d.shape[2]
+                cy, cx = random.randint(h//4, 3*h//4), random.randint(w//4, 3*w//4)
+                r = random.randint(5, 15)
+                d[:, cy-r:cy+r, cx-r:cx+r] = 0
+            return d
+
+
     class DepthNormalize(object):
         """
         per-image foreground standardization:
@@ -269,9 +259,10 @@ if __name__ == "__main__":
 
     # pt数据集里的 depth是原始深度
     train_depth_transform = transforms.Compose([
-        transforms.RandomApply([DepthRandomize(drop_prob=0.05, noise_std=2.0)], p=0.3),
+        DepthBreakdown(p=0.6), # 模拟真实噪声
+        DepthRandomize(drop_prob=0.1, noise_std=2.0),
         DepthNormalize(use_median=True, use_mad=True, clip=3.0)
-        ])
+    ])
     
     val_depth_transform = DepthNormalize(use_median=True, use_mad=True, clip=3.0)
     # ---------------------------- 数据集 ----------------------------
@@ -354,7 +345,12 @@ if __name__ == "__main__":
     )
 
     # ---------------------------- 模型 / 损失 / 优化器 ----------------------------
-    loss_fn = nn.MSELoss().to(device)
+
+    def cosine_loss(pred, gt, eps=1e-8):
+        pred = F.normalize(pred, dim=1, eps=eps)
+        gt   = F.normalize(gt, dim=1, eps=eps)
+        return 1 - F.cosine_similarity(pred, gt, dim=1, eps=eps).mean()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
@@ -362,8 +358,6 @@ if __name__ == "__main__":
     total_val_step = 0
 
     best_val_loss = float("inf")
-    best_avg_roll_diff = None
-    best_avg_pitch_diff = None
     best_rmse = None
     best_std = None
     best_acc = None
@@ -402,7 +396,7 @@ if __name__ == "__main__":
                 else:
                     outputs = model(rgb_inputs)
                     
-                loss = loss_fn(outputs, targets)
+                loss = cosine_loss(outputs, targets)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -422,13 +416,13 @@ if __name__ == "__main__":
         # -------------------- Validation --------------------
         model.eval()
         val_loss_epoch = 0.0
-        total_roll_diff = 0.0
-        total_pitch_diff = 0.0
         sum_squared_angle_error = 0.0
+        sum_angle_error = 0.0
         all_angle_errors = []
         total_correct_angle = 0
         val_samples = 0
-        
+        angle_threshold = 3.0
+
         with torch.no_grad():
             for batch in val_loader:
                 if USE_DEPTH:
@@ -443,55 +437,42 @@ if __name__ == "__main__":
                     
                 with torch.amp.autocast("cuda"):
                     outputs = model(rgb_inputs, depth_inputs) if USE_DEPTH else model(rgb_inputs)
-                    loss = loss_fn(outputs, targets)
+                    loss = cosine_loss(outputs, targets)
 
                 batch_size = rgb_inputs.size(0)
                 val_loss_epoch += loss.item() * batch_size
                 val_samples += batch_size
 
-                # MAE (roll/pitch)
-                roll_diff = torch.abs(outputs[:, 0] - targets[:, 0])
-                pitch_diff = torch.abs(outputs[:, 1] - targets[:, 1])
-                total_roll_diff += roll_diff.sum().item()
-                total_pitch_diff += pitch_diff.sum().item()
-
                 # 方向角度误差 (RMSE / std)
-                roll_pred = outputs[:, 0].cpu().numpy()
-                pitch_pred = outputs[:, 1].cpu().numpy()
-                roll_true = targets[:, 0].cpu().numpy()
-                pitch_true = targets[:, 1].cpu().numpy()
-                for rp, pp, rt, pt in zip(roll_pred, pitch_pred, roll_true, pitch_true):
-                    angle_error = directional_acc(rp, pp, rt, pt)
-                    sum_squared_angle_error += angle_error ** 2
-                    all_angle_errors.append(angle_error)
-                    if angle_error <= 3.0:
-                        total_correct_angle += 1
+                angles = angle_error_deg(outputs, targets)  # (B,)
+                sum_angle_error += angles.sum().item()
+                sum_squared_angle_error += (angles ** 2).sum().item()
+                all_angle_errors.extend(angles.cpu().tolist())
+
+                total_correct_angle += (angles <= angle_threshold).sum().item()
 
         val_samples = max(1, val_samples)
         avg_val_loss = val_loss_epoch / val_samples
-        avg_roll_diff = total_roll_diff / val_samples
-        avg_pitch_diff = total_pitch_diff / val_samples
         val_acc = total_correct_angle / val_samples
+        mean_angle = sum_angle_error / val_samples
         rmse_angle = np.sqrt(sum_squared_angle_error / val_samples)
         std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
 
         total_val_step += 1
         writer.add_scalar("Val/Loss", avg_val_loss, total_val_step)
-        writer.add_scalar("Val/Accuracy", val_acc, total_val_step)
-        writer.add_scalars("Val/MAE", {
-            "roll_MAE": avg_roll_diff,
-            "pitch_MAE": avg_pitch_diff
-        }, total_val_step)
-        writer.add_scalar("Val/Directional_RMSE", rmse_angle, total_val_step)
-        writer.add_scalar("Val/Directional_SD", std_dev, total_val_step)
+        writer.add_scalar("Val/Mean", mean_angle, total_val_step)
+        writer.add_scalar(f"Val/Error<={angle_threshold}", val_acc, total_val_step)
+        writer.add_scalar("Val/RMSE", rmse_angle, total_val_step)
+        writer.add_scalar("Val/SD", std_dev, total_val_step)
 
         print(
             f"Epoch {epoch + 1}/{NUM_EPOCHS} | "
             f"Train Loss: {avg_train_loss:.4f} | "
             f"Val Loss: {avg_val_loss:.4f} | "
-            f"Val Acc: {val_acc:.4f} | "
-            f"Roll MAE: {avg_roll_diff:.4f} | Pitch MAE: {avg_pitch_diff:.4f} | "
-            f"Angle RMSE: {rmse_angle:.4f} | Angle std: {std_dev:.4f}"
+            f"Mean Angle: {mean_angle:.3f} deg | "
+            f"Angle RMSE: {rmse_angle:.3f} | "
+            f"Angle std: {std_dev:.3f} | "
+            f"Val Acc: {val_acc:.4f}"
         )
         epoch_end = time.time()
         print(f"this epoch takes time: {epoch_end - epoch_start:.2f} s")
@@ -499,11 +480,10 @@ if __name__ == "__main__":
         # -------- 保存最佳模型（按 val loss，不是 checkpoint，只是 best.pth）--------
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            best_avg_roll_diff = avg_roll_diff
-            best_avg_pitch_diff = avg_pitch_diff
             best_rmse = rmse_angle
             best_std = std_dev
             best_acc = val_acc
+            best_mean = mean_angle
             best_epoch = epoch + 1
 
             print(f"✅ Saved new best model at epoch {epoch + 1}, val loss={avg_val_loss:.4f}")
@@ -517,8 +497,7 @@ if __name__ == "__main__":
     with open(log_path, "a") as f:
         f.write(
             f"Best epoch = {best_epoch}, "
-            f"best MAE (roll) = {best_avg_roll_diff:.4f}, "
-            f"best MAE (pitch) = {best_avg_pitch_diff:.4f}, "
+            f"best mean = {best_mean:.4f}, "
             f"best RMSE = {best_rmse:.4f}, "
             f"best std = {best_std:.4f}, "
             f"best Accuracy = {best_acc:.4f}\n"

@@ -169,7 +169,7 @@ class IAGF_Module(nn.Module):
 
 
 class ResNet18_RGBD(nn.Module):
-    def __init__(self, pretrained=True, out_dim=2):
+    def __init__(self, pretrained=True, out_dim=3, pool_size = 4):
         super().__init__()
 
         backbone = models.resnet18(
@@ -182,7 +182,7 @@ class ResNet18_RGBD(nn.Module):
         self.bn1 = backbone.bn1
         self.relu = backbone.relu
         self.maxpool = backbone.maxpool
-
+        
         # Depth分支: 独立的 conv1, 不共享权重
         #    输入 1 通道, 输出 64 通道, 和 rgb_conv1 对齐        
         self.depth_conv1 = nn.Conv2d(
@@ -203,10 +203,9 @@ class ResNet18_RGBD(nn.Module):
         self.layer3 = backbone.layer3
         self.layer4 = backbone.layer4
 
-        self.avgpool = backbone.avgpool
-
+        self.avgpool = nn.AdaptiveAvgPool2d((pool_size, pool_size))
         in_features = backbone.fc.in_features  # 512
-        self.fc = nn.Linear(in_features, out_dim)
+        self.fc = nn.Linear(in_features * pool_size * pool_size, out_dim)
 
 
     def forward(self, color, depth):
@@ -226,26 +225,15 @@ class ResNet18_RGBD(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
-        x = self.avgpool(x)        # [B, 512, 1, 1]
-        x = torch.flatten(x, 1)    # [B, 512]
+        x = self.avgpool(x)        # [B, 512, 4, 4]
+        x = torch.flatten(x, 1)    # [B, 8192]
         x = self.fc(x)             # [B, out_dim]
 
         return x
 
 
 class ResNet18_RGB(nn.Module):
-    """
-    纯 RGB 版 ResNet18，用于回归 [roll, pitch] 等连续值。
-
-    输入:
-        x: [B, 3, H, W]
-           - 已经做了 /255.0
-           - 再用 ImageNet mean/std 归一化
-
-    输出:
-        [B, out_dim]  比如 out_dim=2 => [roll, pitch]
-    """
-    def __init__(self, pretrained: bool = True, out_dim: int = 2):
+    def __init__(self, pretrained: bool = True, out_dim: int = 3, pool_size = 4):
         super().__init__()
 
         # 1) 加载 ImageNet 预训练 ResNet18
@@ -256,17 +244,29 @@ class ResNet18_RGB(nn.Module):
         else:
             backbone = models.resnet18(pretrained=pretrained)
 
-        # 2) 替换最后的全连接层为回归头
-        in_features = backbone.fc.in_features  # 512
-        backbone.fc = nn.Linear(in_features, out_dim)
-
         self.backbone = backbone
 
+        self.backbone.avgpool = nn.AdaptiveAvgPool2d((pool_size, pool_size))
+
+        in_features = backbone.fc.in_features
+        self.backbone.fc = nn.Linear(in_features * pool_size * pool_size, out_dim)
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, 3, H, W]
-        """
-        return self.backbone(x)
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        x = self.backbone.layer3(x)
+        x = self.backbone.layer4(x)
+
+        x = self.backbone.avgpool(x)           # [B,512,k,k]
+        x = torch.flatten(x, 1)                # [B,512*k*k]
+        x = self.backbone.fc(x)                       # [B,out_dim]
+        return x
 
 
 if __name__ == '__main__':
