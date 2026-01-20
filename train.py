@@ -72,14 +72,14 @@ if __name__ == "__main__":
     LR = 5e-5
     LR_DECAY = "0.1 every 20 epochs"
     NUM_EPOCHS = 80
-    USE_DEPTH = True
+    USE_DEPTH = False
     EARLY_STOP = 7
-    model_name = "ResNet18_RGBD"
+    model_name = "ResNet18_RGB"
     PRE_TRAINED = True
     NUM_WORKERS = 8
-    model = ResNet18_RGBD(pretrained=PRE_TRAINED, out_dim=3).to(device)
+    model = ResNet18_RGB(pretrained=PRE_TRAINED, out_dim=3).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
-    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train7/"
+    save_dir = f"/root/autodl-tmp/project/output/{model_name}/train8_vector_learning/"
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std  = [0.229, 0.224, 0.225]
