@@ -157,6 +157,7 @@ def evaluate(model, loader, device, use_depth=True):
     val_loss_epoch = 0.0
     total_roll_diff = 0.0
     total_pitch_diff = 0.0
+    sum_mean_angle_error = 0.0
     sum_squared_angle_error = 0.0
     all_angle_errors = []
     total_correct_angle = 0
@@ -193,6 +194,7 @@ def evaluate(model, loader, device, use_depth=True):
             pitch_true = targets[:, 1].detach().cpu().numpy()
             for rp, pp, rt, pt in zip(roll_pred, pitch_pred, roll_true, pitch_true):
                 angle_error = directional_acc(rp, pp, rt, pt)
+                sum_mean_angle_error += angle_error
                 sum_squared_angle_error += angle_error ** 2
                 all_angle_errors.append(angle_error)
                 if angle_error <= 10.0:
@@ -203,6 +205,7 @@ def evaluate(model, loader, device, use_depth=True):
     avg_roll_diff = total_roll_diff / val_samples
     avg_pitch_diff = total_pitch_diff / val_samples
     val_acc = total_correct_angle / val_samples
+    mean_angle_error = sum_mean_angle_error / val_samples
     rmse_angle = np.sqrt(sum_squared_angle_error / val_samples)
     std_dev = np.std(all_angle_errors) if all_angle_errors else 0.0
 
@@ -210,6 +213,7 @@ def evaluate(model, loader, device, use_depth=True):
         "val_loss": avg_val_loss,
         "roll_mae": avg_roll_diff,
         "pitch_mae": avg_pitch_diff,
+        "mean_angle_error": mean_angle_error,
         "dir_acc<= 10 deg": val_acc,
         "dir_rmse": rmse_angle,
         "dir_std": std_dev,
@@ -219,12 +223,12 @@ def evaluate(model, loader, device, use_depth=True):
 
 def main():
     # ============ 你需要改的配置 ============
-    USE_DEPTH = True
+    USE_DEPTH = False
     PRE_TRAINED = False  # 评估时不需要预训练，直接加载权重
     BATCH_SIZE = 256
     NUM_WORKERS = 8
 
-    best_model_path = r"D:\files\projects\output\ResNet18_RGBD\train7\best.pth"
+    best_model_path = r"D:\files\projects\output\ResNet18_RGB\train4\best.pth"
     val_root = r"D:\files\persimmon data\RealSenseD405_raw\final_pt"
     # ======================================
 
