@@ -69,15 +69,15 @@ if __name__ == "__main__":
     # ---------------------------- 超参数 ----------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     BATCH_SIZE = 256
-    LR = 5e-5
+    LR = 2e-5
     LR_DECAY = "0.1 every 20 epochs"
     NUM_EPOCHS = 80
-    USE_DEPTH = False
+    USE_DEPTH = True
     EARLY_STOP = 7
-    model_name = "ResNet18_RGB"
+    model_name = "ResNet18_RGBD"
     PRE_TRAINED = True
     NUM_WORKERS = 8
-    model = ResNet18_RGB(pretrained=PRE_TRAINED, out_dim=3).to(device)
+    model = ResNet18_RGBD(pretrained=PRE_TRAINED, out_dim=3).to(device)
     current_time = time.strftime("%m%d%H%M", time.localtime())
     save_dir = f"/root/autodl-tmp/project/output/{model_name}/train8_vector_learning/"
 
